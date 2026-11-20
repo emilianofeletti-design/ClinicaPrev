@@ -19,11 +19,6 @@ import {
   YAxis,
 } from 'recharts';
 import type { User } from 'firebase/auth';
-import {
-  BASELINE_EMERGING_TRENDS,
-  BASELINE_MONTHLY_SERIES,
-  BASELINE_PUBLICATIONS,
-} from '../data/clinicalProtocols';
 import { isVerifiedCurator } from '../firebase';
 import {
   fetchMonitoringDigestFromFirestore,
@@ -34,42 +29,24 @@ import type {
   ResearchDatabase,
   ResearchDomain,
 } from '../types/clinical';
+import {
+  buildStaticBaselineDigest,
+  readCachedLocalDigest,
+  runBrowserPubMedMonthlyScan,
+  selectFreshestDigest,
+  writeCachedLocalDigest,
+} from '../utils/clientPubMedScan';
 import type {
   ClinicalParameterSet,
   ParameterRevisionRecord,
   ParameterUpdateProposal,
 } from '../utils/clinicalParameters';
 import {
-  computeMonthlyScanEligibility,
-  MONTHLY_SCAN_COOLDOWN_DAYS,
-} from '../utils/scanPolicy';
-import {
   buildReaderFromPublication,
   buildReaderFromTrend,
   type SourceReaderDocument,
 } from '../utils/sourceReader';
 import { ParameterGovernancePanel } from './ParameterGovernancePanel';
-
-const STATIC_BASELINE_VERIFIED_ISO = '2026-11-20T00:00:00.000Z';
-
-function buildStaticFallbackDigest(): MonitoringDigestResponse {
-  const eligibility = computeMonthlyScanEligibility(STATIC_BASELINE_VERIFIED_ISO);
-  return {
-    lastMonthlyScanIso: STATIC_BASELINE_VERIFIED_ISO,
-    nextScheduledScanIso: eligibility.nextScheduledScanIso,
-    cadenceDays: MONTHLY_SCAN_COOLDOWN_DAYS,
-    canRunScan: eligibility.canRunScan,
-    daysUntilNextScan: eligibility.daysUntilNextScan,
-    sourcesTracked: ['NCBI PubMed', 'Google Scholar', 'Fondazione AIRC'],
-    livePubMedCount: 0,
-    aiSynthesisNote: null,
-    aiSynthesisError: null,
-    monthlySeries: BASELINE_MONTHLY_SERIES,
-    emergingTrends: BASELINE_EMERGING_TRENDS,
-    publications: BASELINE_PUBLICATIONS,
-    groundingSources: [],
-  };
-}
 
 const DOMAIN_LABELS: Record<ResearchDomain, string> = {
   all: 'Tutte',
@@ -128,73 +105,93 @@ export function ResearchTrendsDashboard({
 
   useEffect(() => {
     let active = true;
-    const loadDigest = async () => {
+    const loadSavedDigest = async () => {
       setLoadingDigest(true);
       setDigestError(null);
       try {
+        // Read-only load of already stored archive (NEVER triggers an automatic live scan)
+        const localDigest = readCachedLocalDigest();
         const firestoreDigest = await fetchMonitoringDigestFromFirestore().catch(() => null);
         if (!active) return;
-        if (firestoreDigest) {
-          setDigest(firestoreDigest);
-          return;
-        }
 
         const isStaticHost =
           import.meta.env.VITE_STATIC_ONLY === 'true' ||
           (typeof window !== 'undefined' && window.location.hostname.endsWith('.github.io'));
 
-        const apiResult = isStaticHost
-          ? null
-          : await fetch('/api/monitoring/digest')
-              .then(async (res) => {
-                if (!res.ok) return null;
-                const contentType = res.headers.get('content-type') || '';
-                if (!contentType.includes('application/json')) return null;
-                return (await res.json()) as MonitoringDigestResponse;
-              })
-              .catch(() => null);
+        const apiDigest =
+          firestoreDigest || isStaticHost
+            ? null
+            : await fetch('/api/monitoring/digest')
+                .then(async (res) => {
+                  if (!res.ok) return null;
+                  const contentType = res.headers.get('content-type') || '';
+                  if (!contentType.includes('application/json')) return null;
+                  return (await res.json()) as MonitoringDigestResponse;
+                })
+                .catch(() => null);
 
         if (!active) return;
-        setDigest(apiResult ?? buildStaticFallbackDigest());
+        setDigest(
+          selectFreshestDigest([
+            firestoreDigest,
+            localDigest,
+            apiDigest,
+            buildStaticBaselineDigest(),
+          ])
+        );
       } catch {
         if (active) {
-          setDigest(buildStaticFallbackDigest());
+          setDigest(selectFreshestDigest([readCachedLocalDigest(), buildStaticBaselineDigest()]));
         }
       } finally {
         if (active) setLoadingDigest(false);
       }
     };
-    void loadDigest();
+    void loadSavedDigest();
     return () => {
       active = false;
     };
   }, []);
 
-  const handleRunMonthlyScan = async () => {
-    if (!digest?.canRunScan) return;
+  const handleRunManualMonthlyCheck = async () => {
+    if (!digest?.canRunScan || scanningMonthly) return;
     setScanningMonthly(true);
     setScanError(null);
     try {
-      const res = await fetch('/api/monitoring/run-monthly-scan', { method: 'POST' });
-      const contentType = res.headers.get('content-type') || '';
-      if (!contentType.includes('application/json')) {
-        throw new Error(
-          'La scansione live su API esterne richiede il backend Node.js attivo. Su hosting statico (es. GitHub Pages) l’osservatorio mostra l’archivio scientifico validato e gli aggiornamenti pubblicati su Firestore.'
-        );
+      const isStaticHost =
+        import.meta.env.VITE_STATIC_ONLY === 'true' ||
+        (typeof window !== 'undefined' && window.location.hostname.endsWith('.github.io'));
+
+      let updated: MonitoringDigestResponse | null = null;
+
+      // On full-stack host, try backend scan first (includes PubMed + batched summaries)
+      if (!isStaticHost) {
+        try {
+          const res = await fetch('/api/monitoring/run-monthly-scan', { method: 'POST' });
+          const contentType = res.headers.get('content-type') || '';
+          if (res.ok && contentType.includes('application/json')) {
+            updated = (await res.json()) as MonitoringDigestResponse;
+          }
+        } catch {
+          updated = null;
+        }
       }
-      const data = (await res.json()) as MonitoringDigestResponse & { error?: string };
-      if (!res.ok) {
-        throw new Error(data.error || 'Scansione periodica non riuscita.');
+
+      // Direct browser PubMed check (works on GitHub Pages with zero backend, strictly 1x / 30 days)
+      if (!updated) {
+        updated = await runBrowserPubMedMonthlyScan(digest);
       }
-      setDigest(data);
+
+      setDigest(updated);
+      writeCachedLocalDigest(updated);
       if (isVerifiedCurator(curatorUser)) {
-        await saveMonitoringDigestToFirestore(data);
+        await saveMonitoringDigestToFirestore(updated);
       }
     } catch (err) {
       setScanError(
         err instanceof Error
           ? err.message
-          : 'Errore durante la scansione periodica su PubMed, Google Scholar e AIRC.'
+          : 'Errore durante il controllo manuale su NCBI PubMed.'
       );
     } finally {
       setScanningMonthly(false);
@@ -234,25 +231,26 @@ export function ResearchTrendsDashboard({
 
   return (
     <div className="space-y-8">
-      {/* Header & Monthly Cadence Bar */}
+      {/* Header & Manual 30-Day Check Bar */}
       <section className="bg-gradient-to-r from-[#FFFDF8] via-white to-[#F0FDFA] border border-teal-100 rounded-2xl p-6 flex flex-col lg:flex-row lg:items-end justify-between gap-6 shadow-[0_2px_12px_rgba(13,110,110,0.04)]">
         <div className="space-y-2">
           <p className="text-xs font-mono text-[#0D6E6E]">
-            Monitoraggio Accademico Periodico · NCBI PubMed · Google Scholar · Fondazione AIRC
+            Controllo Manuale Fonti · Max 1 Volta Ogni 30 Giorni · NCBI PubMed · Google Scholar · AIRC
           </p>
           <h1 className="text-3xl font-bold tracking-tight text-slate-900">
             Osservatorio Ricerca &amp; Trend Emergenti
           </h1>
           <p className="text-sm text-slate-600 max-w-2xl">
-            Archivio condiviso di pubblicazioni peer-reviewed e trend emergenti da PubMed, Google
-            Scholar e Fondazione AIRC. L’aggiornamento tramite API si sblocca su richiesta solo
-            trascorsi 30 giorni dall’ultima scansione, evitando chiamate inutili.
+            Archivio di pubblicazioni peer-reviewed e trend emergenti da PubMed, Google Scholar e
+            Fondazione AIRC. <strong>Nessun controllo automatico in background</strong>: l’utente può
+            avviare manualmente il controllo di nuove fonti cliccando il pulsante qui a fianco, al
+            massimo una volta ogni 30 giorni.
           </p>
         </div>
 
         <button
           type="button"
-          onClick={handleRunMonthlyScan}
+          onClick={handleRunManualMonthlyCheck}
           disabled={loadingDigest || !digest?.canRunScan || scanningMonthly}
           className={`inline-flex items-center justify-center gap-2 px-4 py-2.5 text-xs font-semibold rounded-lg transition-colors whitespace-nowrap shrink-0 ${
             digest?.canRunScan
@@ -268,11 +266,11 @@ export function ResearchTrendsDashboard({
             <CheckCircle2 className="w-4 h-4 text-emerald-700" />
           )}
           {scanningMonthly
-            ? 'Aggiornamento in corso...'
+            ? 'Controllo PubMed in corso...'
             : digest?.canRunScan
-              ? 'Aggiorna Fonti Scientifiche Ora'
+              ? 'Controlla Nuove Fonti Ora'
               : digest
-                ? `Dati aggiornati (prossima tra ${digest.daysUntilNextScan} gg)`
+                ? `Già aggiornato (sblocco tra ${digest.daysUntilNextScan} gg)`
                 : 'Verifica stato...'}
         </button>
       </section>
@@ -317,12 +315,12 @@ export function ResearchTrendsDashboard({
             </div>
 
             <div className="bg-white border border-slate-200 rounded-lg p-5 space-y-1">
-              <p className="text-xs font-mono text-slate-500">NUOVA SCANSIONE DISPONIBILE</p>
+              <p className="text-xs font-mono text-slate-500">PROSSIMO CONTROLLO SBLOCCABILE</p>
               <p className="text-base font-semibold text-slate-900 tabular-nums flex items-center gap-1.5">
                 <CalendarClock className="w-4 h-4 text-[#0D6E6E] shrink-0" />
                 {digest.canRunScan ? 'Disponibile ora' : formatDate(digest.nextScheduledScanIso)}
               </p>
-              <p className="text-xs text-slate-500">Solo su richiesta (nessuna chiamata a vuoto)</p>
+              <p className="text-xs text-slate-500">Solo su clic manuale · max 1 volta / 30 gg</p>
             </div>
 
             <div className="bg-white border border-slate-200 rounded-lg p-5 space-y-1">
@@ -404,8 +402,8 @@ export function ResearchTrendsDashboard({
               <div className="space-y-1">
                 <h2 className="text-sm font-semibold text-slate-900">
                   {digest.canRunScan
-                    ? 'Aggiornamento periodico delle fonti disponibile'
-                    : 'Dati scientifici aggiornati'}
+                    ? 'Controllo manuale delle fonti disponibile'
+                    : 'Fonti scientifiche già aggiornate (nessun controllo automatico)'}
                 </h2>
                 <p className="text-xs text-slate-700 leading-relaxed max-w-3xl">
                   {digest.scanMessage ? (
@@ -413,11 +411,11 @@ export function ResearchTrendsDashboard({
                   ) : digest.canRunScan ? (
                     `Sono trascorsi almeno ${digest.cadenceDays} giorni dall’ultimo controllo (${formatDate(
                       digest.lastMonthlyScanIso
-                    )}). Cliccando “Aggiorna Fonti Scientifiche Ora” verrà eseguita una singola scansione su PubMed, Google Scholar e Fondazione AIRC valida per i successivi 30 giorni.`
+                    )}). Cliccando “Controlla Nuove Fonti Ora” verrà eseguito un singolo controllo manuale su NCBI PubMed valido per i successivi 30 giorni.`
                   ) : (
                     `Le fonti e i protocolli (PubMed, Google Scholar e Fondazione AIRC) risultano aggiornati al ${formatDate(
                       digest.lastMonthlyScanIso
-                    )}. Per evitare chiamate API inutili, una nuova scansione su richiesta si sbloccherà dal ${formatDate(
+                    )}. Non viene eseguito alcun controllo automatico: il pulsante manuale si sbloccherà dal ${formatDate(
                       digest.nextScheduledScanIso
                     )} (tra ${digest.daysUntilNextScan} ${
                       digest.daysUntilNextScan === 1 ? 'giorno' : 'giorni'
