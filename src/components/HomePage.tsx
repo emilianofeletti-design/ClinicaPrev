@@ -10,6 +10,9 @@ import {
   TrendingUp,
 } from 'lucide-react';
 import { useRef } from 'react';
+import mediterraneanNutritionImg from '../assets/images/mediterranean_nutrition_art_1795180944779.jpg';
+import preventiveHealthImg from '../assets/images/preventive_health_illustration_1795178666156.jpg';
+import scientificEvidenceImg from '../assets/images/scientific_evidence_art_1795180945253.jpg';
 
 interface HomePageProps {
   onStartAssessment: () => void;
@@ -133,7 +136,7 @@ export function HomePage({
           <div className="lg:col-span-5">
             <div className="rounded-2xl overflow-hidden border border-teal-100/90 bg-[#FAF9F5] shadow-sm">
               <img
-                src="/src/assets/images/preventive_health_illustration_1795178666156.jpg"
+                src={preventiveHealthImg}
                 alt="Illustrazione di uno stile di vita attivo e sano tra natura mediterranea e benessere preventivo"
                 className="w-full h-auto object-cover"
               />
@@ -204,7 +207,7 @@ export function HomePage({
         <article className="bg-white border border-stone-200 rounded-2xl overflow-hidden shadow-sm flex flex-col">
           <div className="aspect-[4/3] w-full overflow-hidden bg-[#FAF9F5] border-b border-stone-100">
             <img
-              src="/src/assets/images/mediterranean_nutrition_art_1795180944779.jpg"
+              src={mediterraneanNutritionImg}
               alt="Illustrazione di alimenti freschi della dieta mediterranea: olio d'oliva, agrumi, verdure a foglia verde, pomodori e cereali integrali"
               className="w-full h-full object-cover"
             />
@@ -240,7 +243,7 @@ export function HomePage({
         <article className="bg-white border border-stone-200 rounded-2xl overflow-hidden shadow-sm flex flex-col">
           <div className="aspect-[4/3] w-full overflow-hidden bg-[#FAF9F5] border-b border-stone-100">
             <img
-              src="/src/assets/images/scientific_evidence_art_1795180945253.jpg"
+              src={scientificEvidenceImg}
               alt="Illustrazione di ricerca scientifica verificata con quaderno di grafici e lente d'ingrandimento"
               className="w-full h-full object-cover"
             />

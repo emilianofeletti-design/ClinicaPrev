@@ -10,6 +10,7 @@ import {
   Users,
 } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState } from 'react';
+import preventiveHealthImg from '../assets/images/preventive_health_illustration_1795178666156.jpg';
 import type {
   ActivityType,
   BiologicalSex,
@@ -249,7 +250,7 @@ export function AssessmentForm({
           <div className="lg:col-span-5">
             <div className="rounded-xl overflow-hidden border border-teal-100 bg-[#FFFBF5] shadow-xs">
               <img
-                src="/src/assets/images/preventive_health_illustration_1795178666156.jpg"
+                src={preventiveHealthImg}
                 alt="Illustrazione di prevenzione e stile di vita sano all’aria aperta"
                 className="w-full h-auto aspect-[4/3] object-cover block"
               />

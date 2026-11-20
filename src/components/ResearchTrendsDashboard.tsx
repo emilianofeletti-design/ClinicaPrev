@@ -19,6 +19,11 @@ import {
   YAxis,
 } from 'recharts';
 import type { User } from 'firebase/auth';
+import {
+  BASELINE_EMERGING_TRENDS,
+  BASELINE_MONTHLY_SERIES,
+  BASELINE_PUBLICATIONS,
+} from '../data/clinicalProtocols';
 import { isVerifiedCurator } from '../firebase';
 import {
   fetchMonitoringDigestFromFirestore,
@@ -35,11 +40,36 @@ import type {
   ParameterUpdateProposal,
 } from '../utils/clinicalParameters';
 import {
+  computeMonthlyScanEligibility,
+  MONTHLY_SCAN_COOLDOWN_DAYS,
+} from '../utils/scanPolicy';
+import {
   buildReaderFromPublication,
   buildReaderFromTrend,
   type SourceReaderDocument,
 } from '../utils/sourceReader';
 import { ParameterGovernancePanel } from './ParameterGovernancePanel';
+
+const STATIC_BASELINE_VERIFIED_ISO = '2026-11-20T00:00:00.000Z';
+
+function buildStaticFallbackDigest(): MonitoringDigestResponse {
+  const eligibility = computeMonthlyScanEligibility(STATIC_BASELINE_VERIFIED_ISO);
+  return {
+    lastMonthlyScanIso: STATIC_BASELINE_VERIFIED_ISO,
+    nextScheduledScanIso: eligibility.nextScheduledScanIso,
+    cadenceDays: MONTHLY_SCAN_COOLDOWN_DAYS,
+    canRunScan: eligibility.canRunScan,
+    daysUntilNextScan: eligibility.daysUntilNextScan,
+    sourcesTracked: ['NCBI PubMed', 'Google Scholar', 'Fondazione AIRC'],
+    livePubMedCount: 0,
+    aiSynthesisNote: null,
+    aiSynthesisError: null,
+    monthlySeries: BASELINE_MONTHLY_SERIES,
+    emergingTrends: BASELINE_EMERGING_TRENDS,
+    publications: BASELINE_PUBLICATIONS,
+    groundingSources: [],
+  };
+}
 
 const DOMAIN_LABELS: Record<ResearchDomain, string> = {
   all: 'Tutte',
@@ -102,23 +132,32 @@ export function ResearchTrendsDashboard({
       setLoadingDigest(true);
       setDigestError(null);
       try {
-        const [firestoreDigest, apiRes] = await Promise.all([
-          fetchMonitoringDigestFromFirestore(),
-          fetch('/api/monitoring/digest'),
-        ]);
-        if (firestoreDigest && active) {
+        const firestoreDigest = await fetchMonitoringDigestFromFirestore().catch(() => null);
+        if (!active) return;
+        if (firestoreDigest) {
           setDigest(firestoreDigest);
-          setLoadingDigest(false);
           return;
         }
-        if (!apiRes.ok) throw new Error('Impossibile caricare il monitoraggio accademico mensile.');
-        const data = (await apiRes.json()) as MonitoringDigestResponse;
-        if (active) setDigest(data);
-      } catch (err) {
+
+        const isGitHubPages =
+          typeof window !== 'undefined' && window.location.hostname.endsWith('.github.io');
+
+        const apiResult = isGitHubPages
+          ? null
+          : await fetch('/api/monitoring/digest')
+              .then(async (res) => {
+                if (!res.ok) return null;
+                const contentType = res.headers.get('content-type') || '';
+                if (!contentType.includes('application/json')) return null;
+                return (await res.json()) as MonitoringDigestResponse;
+              })
+              .catch(() => null);
+
+        if (!active) return;
+        setDigest(apiResult ?? buildStaticFallbackDigest());
+      } catch {
         if (active) {
-          setDigestError(
-            err instanceof Error ? err.message : 'Errore nel caricamento del digest mensile.'
-          );
+          setDigest(buildStaticFallbackDigest());
         }
       } finally {
         if (active) setLoadingDigest(false);
@@ -136,6 +175,12 @@ export function ResearchTrendsDashboard({
     setScanError(null);
     try {
       const res = await fetch('/api/monitoring/run-monthly-scan', { method: 'POST' });
+      const contentType = res.headers.get('content-type') || '';
+      if (!contentType.includes('application/json')) {
+        throw new Error(
+          'La scansione live su API esterne richiede il backend Node.js attivo. Su hosting statico (es. GitHub Pages) l’osservatorio mostra l’archivio scientifico validato e gli aggiornamenti pubblicati su Firestore.'
+        );
+      }
       const data = (await res.json()) as MonitoringDigestResponse & { error?: string };
       if (!res.ok) {
         throw new Error(data.error || 'Scansione periodica non riuscita.');
