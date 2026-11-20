@@ -171,3 +171,41 @@ test('evaluateHistoricalTrajectory detects stable trajectory when scores do not 
   assert.equal(evaluation.improvedFactors.length, 0);
   assert.equal(evaluation.worsenedFactors.length, 0);
 });
+
+test('getPersonalizedAdvice in RiskDashboard generates guideline-based suggestions (sodium, daily BP monitoring, activity, smoking) and icon categories', async () => {
+  const { getPersonalizedAdvice } = await import('../components/RiskDashboard');
+
+  const highRiskPreset = CLINICAL_PRESETS.find((p) => p.id === 'high_cardiometabolic')!;
+  const highRiskResult = evaluateClinicalRisk(highRiskPreset.profile);
+  const adviceList = getPersonalizedAdvice(highRiskPreset.profile, highRiskResult);
+
+  const bpAdvice = adviceList.find((a) => a.iconCategory === 'hypertension');
+  assert.ok(bpAdvice, 'Elevated systolic BP must trigger hypertension advice');
+  assert.ok(
+    bpAdvice.suggestedActions.some((s) => /Riduzione apporto sodico/i.test(s)),
+    'Hypertension advice must include sodium reduction'
+  );
+  assert.ok(
+    bpAdvice.suggestedActions.some((s) => /Monitoraggio pressorio quotidiano/i.test(s)),
+    'Hypertension advice must include daily blood pressure monitoring'
+  );
+  assert.ok(bpAdvice.guideline.includes('ESC'));
+
+  assert.ok(
+    adviceList.some((a) => a.iconCategory === 'activity' && /Incremento attività fisica/i.test(a.title)),
+    'Insufficient activity must trigger physical activity advice'
+  );
+  assert.ok(
+    adviceList.some((a) => a.iconCategory === 'smoking' && /Cessazione del fumo/i.test(a.title)),
+    'Active smoker must trigger tobacco cessation advice'
+  );
+  assert.equal(adviceList[0].severity, 'urgent', 'Urgent alerts must be sorted first');
+
+  const protectivePreset = CLINICAL_PRESETS.find((p) => p.id === 'protective')!;
+  const protectiveResult = evaluateClinicalRisk(protectivePreset.profile);
+  const optimalAdvice = getPersonalizedAdvice(protectivePreset.profile, protectiveResult);
+  assert.equal(optimalAdvice.length, 1);
+  assert.equal(optimalAdvice[0].severity, 'positive');
+  assert.equal(optimalAdvice[0].iconCategory, 'protective');
+});
+

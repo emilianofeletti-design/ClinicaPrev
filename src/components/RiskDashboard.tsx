@@ -35,10 +35,18 @@ import type {
   PathologyPopulationComparison,
   RiskTier,
 } from '../types/clinical';
-import type { ClinicalParameterSet } from '../utils/clinicalParameters';
+import {
+  DEFAULT_CLINICAL_PARAMETERS,
+  type ClinicalParameterSet,
+} from '../utils/clinicalParameters';
+import {
+  computeEffectiveActivityMetrics,
+  normalizeOptionalLipid,
+} from '../utils/clinicalRiskEngine';
 import {
   buildPersonalizedInterventionPlan,
   evaluateHistoricalTrajectory,
+  type FactorKey,
 } from '../utils/interventionPlanner';
 import {
   buildLongitudinalSeries,
@@ -47,8 +55,15 @@ import {
   type LongitudinalMetricKey,
   type PersonalAnalysisRecord,
 } from '../utils/personalArchiveFile';
+import {
+  HealthAdviceAlert,
+  type AdviceSeverity,
+  type PersonalizedAdviceItem,
+} from './HealthAdviceAlert';
 import { HistoricalEvaluationPanel } from './HistoricalEvaluationPanel';
 import { InterventionPlanSection } from './InterventionPlanSection';
+
+export type { AdviceSeverity, PersonalizedAdviceItem };
 
 interface RiskDashboardProps {
   profile: ClinicalProfileInput;
@@ -62,6 +77,312 @@ interface RiskDashboardProps {
   onClearTimeline: () => void;
   onOpenLegal: () => void;
   onOpenResearch: () => void;
+}
+
+/**
+ * Analyzes `computedProfile` and `result` against ESC, WHO, IDF/FINDRISC and WCRF/AICR
+ * guidelines to generate prioritized clinical suggestions displayed via `HealthAdviceAlert`.
+ */
+export function getPersonalizedAdvice(
+  computedProfile: ClinicalProfileInput,
+  result: ClinicalAssessmentResult,
+  params: ClinicalParameterSet = DEFAULT_CLINICAL_PARAMETERS
+): PersonalizedAdviceItem[] {
+  const advice: PersonalizedAdviceItem[] = [];
+  const activity = computeEffectiveActivityMetrics(computedProfile, params);
+  const waistThreshold = computedProfile.sex === 'male' ? 94 : 80;
+  const waistHigh = computedProfile.sex === 'male' ? 102 : 88;
+  const totalChol = normalizeOptionalLipid(computedProfile.totalCholesterolMgDl);
+  const hdlChol = normalizeOptionalLipid(computedProfile.hdlCholesterolMgDl);
+  const nonHdl = totalChol !== null && hdlChol !== null ? Math.round(totalChol - hdlChol) : null;
+
+  // 1. Cessazione fumo di tabacco
+  if (
+    computedProfile.smokingStatus === 'current_light' ||
+    computedProfile.smokingStatus === 'current_heavy'
+  ) {
+    advice.push({
+      id: 'advice_smoking',
+      factorKey: 'smoking',
+      iconCategory: 'smoking',
+      severity: 'urgent',
+      severityLabel: 'Intervento prioritario',
+      title: 'Cessazione del fumo di tabacco',
+      triggerMetric: `${computedProfile.packYears} pacchetti-anno · CV ${result.cardiovascular.scoreNumeric}% · Onco ${result.oncologic.scoreNumeric}/100`,
+      suggestedActions: [
+        'Percorso guidato presso Centro Antifumo SSN (Telefono Verde ISS 800 554088)',
+        'Valutazione terapia antifumo di prima linea con il medico curante',
+      ],
+      actionSummary:
+        'Smettere di fumare è il singolo intervento modificabile con il maggiore impatto simultaneo su rischio cardiovascolare e oncologico.',
+      guideline: 'ESC Prevention 2021 · IARC Monograph 100E · ISS',
+      domains: 'Cardiovascolare · Oncologico',
+    });
+  }
+
+  // 2. Rischio ipertensione -> Riduzione apporto sodico & Monitoraggio pressorio quotidiano
+  if (
+    computedProfile.systolicBp >= 130 ||
+    ((result.cardiovascular.tier === 'high' || result.cardiovascular.tier === 'very_high') &&
+      computedProfile.systolicBp >= 125)
+  ) {
+    const isUrgent =
+      computedProfile.systolicBp >= 140 ||
+      result.cardiovascular.tier === 'high' ||
+      result.cardiovascular.tier === 'very_high';
+    advice.push({
+      id: 'advice_sodium_bp',
+      factorKey: 'blood_pressure',
+      iconCategory: 'hypertension',
+      severity: isUrgent ? 'urgent' : 'warning',
+      severityLabel: isUrgent ? 'Intervento prioritario' : 'Azione consigliata',
+      title:
+        computedProfile.systolicBp >= 140
+          ? 'Rischio elevato di ipertensione arteriosa'
+          : 'Pressione arteriosa sopra il target ottimale',
+      triggerMetric: `PA sistolica ${computedProfile.systolicBp} mmHg · Rischio CV ${result.cardiovascular.scoreNumeric}%`,
+      suggestedActions: [
+        'Riduzione apporto sodico (<5 g di sale/giorno, limitando salumi e cibi pronti)',
+        'Monitoraggio pressorio quotidiano (diario domiciliare mattina e sera per 7 giorni)',
+        ...(computedProfile.systolicBp >= 140
+          ? ['Condivisione del diario pressorio con il MMG per verifica clinica/terapeutica']
+          : []),
+      ],
+      actionSummary:
+        'Ogni calo sostenuto di 10 mmHg della pressione sistolica riduce di circa il 20% il rischio di eventi cardiovascolari maggiori e ictus.',
+      guideline: 'ESC Hypertension Guidelines 2024 · DASH Trial',
+      domains: 'Cardiovascolare',
+    });
+  }
+
+  // 3. Incremento attività fisica
+  const lowSteps =
+    activity.dailySteps !== null && activity.dailySteps < params.dailyStepsOptimalThreshold;
+  if (
+    !activity.meetsWhoTarget ||
+    !activity.hasCombinedModality ||
+    lowSteps ||
+    computedProfile.sedentaryHoursPerDay >= 9
+  ) {
+    const isUrgent = !activity.meetsWhoTarget && activity.whoEquivalentMinutes < 75;
+    advice.push({
+      id: 'advice_activity',
+      factorKey: 'activity',
+      iconCategory: 'activity',
+      severity: isUrgent ? 'urgent' : 'warning',
+      severityLabel: isUrgent ? 'Intervento prioritario' : 'Azione consigliata',
+      title: 'Incremento attività fisica e riduzione sedentarietà',
+      triggerMetric: `${activity.whoEquivalentMinutes} min eq. OMS/sett${
+        activity.dailySteps !== null ? ` · ${activity.dailySteps} passi/die` : ''
+      } · ${computedProfile.sedentaryHoursPerDay} h seduto`,
+      suggestedActions: [
+        `Incremento attività fisica verso ≥${params.whoWeeklyMinutesTarget} min/settimana`,
+        'Allenamento combinato: aerobico + 2 sedute/settimana di rinforzo muscolare',
+        `Target ≥${params.dailyStepsOptimalThreshold} passi/giorno con pause attive ogni 45–60 min`,
+      ],
+      actionSummary:
+        'L’esercizio combinato migliora la sensibilità insulinica, abbassa la pressione arteriosa e riduce l’incidenza di tumori correlati.',
+      guideline: 'WHO 2020 · Momma BJSM 2022 · Banach EJPC 2023',
+      domains: 'Cardiovascolare · Diabete · Oncologico',
+    });
+  }
+
+  // 4. Controllo peso e circonferenza vita
+  if (result.bmi >= 25 || computedProfile.waistCm >= waistThreshold) {
+    const isUrgent = result.bmi >= 30 || computedProfile.waistCm > waistHigh;
+    advice.push({
+      id: 'advice_weight_waist',
+      factorKey: 'adiposity',
+      iconCategory: 'weight',
+      severity: isUrgent ? 'urgent' : 'warning',
+      severityLabel: isUrgent ? 'Intervento prioritario' : 'Azione consigliata',
+      title: 'Riduzione peso corporeo e circonferenza vita',
+      triggerMetric: `BMI ${result.bmi.toFixed(1)} kg/m² · Vita ${computedProfile.waistCm} cm (target <${waistThreshold} cm)`,
+      suggestedActions: [
+        'Deficit calorico graduale e sostenibile (−5/8% del peso in 3–6 mesi)',
+        'Monitoraggio settimanale di peso e girovita abbinato a camminata post-prandiale',
+      ],
+      actionSummary:
+        'Ridurre l’adiposità viscerale addominale abbatte simultaneamente il punteggio FINDRISC, la pressione sistolica e il carico infiammatorio.',
+      guideline: 'DPP / Look AHEAD · WCRF/AICR 2018 · IDF',
+      domains: 'Cardiovascolare · Diabete · Oncologico',
+    });
+  }
+
+  // 5. Screening glicemico (FINDRISC / pregressa iperglicemia)
+  if (
+    result.metabolic.scoreNumeric >= params.findriscHighRiskCutoff ||
+    computedProfile.priorHighBloodGlucose
+  ) {
+    const isUrgent =
+      computedProfile.priorHighBloodGlucose || result.metabolic.scoreNumeric >= 15;
+    advice.push({
+      id: 'advice_glucose',
+      factorKey: 'glucose',
+      iconCategory: 'glucose',
+      severity: isUrgent ? 'urgent' : 'warning',
+      severityLabel: isUrgent ? 'Intervento prioritario' : 'Azione consigliata',
+      title: 'Monitoraggio glicemico (HbA1c e glicemia a digiuno)',
+      triggerMetric: `FINDRISC ${result.metabolic.scoreNumeric}/26 pt (${result.metabolic.secondaryScoreValue} rischio 10 anni)`,
+      suggestedActions: [
+        'Dosaggio emoglobina glicata (HbA1c) e glicemia a digiuno con il MMG',
+        'Riduzione zuccheri liberi/farine raffinate e camminata di 10–15 min dopo i pasti',
+      ],
+      actionSummary:
+        'Intercettare precocemente il prediabete e intervenire su dieta e movimento riduce fino al 58% la progressione verso il diabete tipo 2.',
+      guideline: 'ADA Standards of Care 2025 · SID-AMD · FINDRISC',
+      domains: 'Diabete · Cardiovascolare',
+    });
+  }
+
+  // 6. Riduzione consumo alcolico
+  if (computedProfile.alcoholUnitsPerWeek > 3) {
+    const isUrgent = computedProfile.alcoholUnitsPerWeek > 14;
+    advice.push({
+      id: 'advice_alcohol',
+      factorKey: 'alcohol',
+      iconCategory: 'alcohol',
+      severity: isUrgent ? 'urgent' : 'warning',
+      severityLabel: isUrgent ? 'Intervento prioritario' : 'Azione consigliata',
+      title: 'Riduzione del consumo di alcol',
+      triggerMetric: `${computedProfile.alcoholUnitsPerWeek} UA/settimana · Indice Onco ${result.oncologic.scoreNumeric}/100`,
+      suggestedActions: [
+        'Inserire 4–5 giorni consecutivi alcohol-free a settimana',
+        'Ridurre aperitivi/superalcolici verso ≤3 UA/sett (target ottimale OMS: 0 UA)',
+      ],
+      actionSummary:
+        'L’alcol è un cancerogeno IARC Gruppo 1 senza soglia priva di rischio e contribuisce ad aumentare pressione arteriosa e peso corporeo.',
+      guideline: 'WHO Europe / Lancet Public Health 2023 · IARC',
+      domains: isUrgent ? 'Oncologico · Cardiovascolare' : 'Oncologico',
+    });
+  }
+
+  // 7. Qualità nutrizionale
+  if (
+    computedProfile.fruitVegServingsPerDay < params.fruitVegDailyTarget ||
+    computedProfile.redProcessedMeatServingsPerWeek > params.redMeatWeeklyLimit ||
+    computedProfile.ultraProcessedIntake !== 'rare'
+  ) {
+    const isUrgent =
+      computedProfile.ultraProcessedIntake === 'frequent' ||
+      computedProfile.redProcessedMeatServingsPerWeek >= 6;
+    advice.push({
+      id: 'advice_nutrition',
+      factorKey: 'nutrition',
+      iconCategory: 'nutrition',
+      severity: isUrgent ? 'urgent' : 'warning',
+      severityLabel: isUrgent ? 'Intervento prioritario' : 'Azione consigliata',
+      title: 'Ottimizzazione dieta mediterranea e fibre vegetali',
+      triggerMetric: `${computedProfile.fruitVegServingsPerDay} veg/die · ${computedProfile.redProcessedMeatServingsPerWeek} carni/sett`,
+      suggestedActions: [
+        `Aumentare frutta e verdura ad almeno ${params.fruitVegDailyTarget} porzioni/giorno (>30 g fibre)`,
+        `Limitare carni rosse/lavorate a ≤${Math.max(1, params.redMeatWeeklyLimit - 1)} porzioni/sett ed eliminare ultra-processati frequenti`,
+      ],
+      actionSummary:
+        'Aderire al modello Mediterraneo tradizionale protegge da eventi cardiovascolari, picchi glicemici e tumori del tratto gastrointestinale.',
+      guideline: 'WCRF/AICR 2018 · PREDIMED NEJM 2018 · BMJ 2024 UPF',
+      domains: 'Oncologico · Diabete · Cardiovascolare',
+    });
+  }
+
+  // 8. Profilo lipidico (Non-HDL elevato o mancante)
+  if (nonHdl !== null && nonHdl >= 145) {
+    advice.push({
+      id: 'advice_lipids',
+      factorKey: 'lipids',
+      iconCategory: 'lipids',
+      severity: nonHdl >= 175 ? 'urgent' : 'warning',
+      severityLabel: nonHdl >= 175 ? 'Intervento prioritario' : 'Azione consigliata',
+      title: 'Riduzione del colesterolo aterogeno (Non-HDL)',
+      triggerMetric: `Non-HDL ${nonHdl} mg/dL (target <130 mg/dL)`,
+      suggestedActions: [
+        'Sostituire grassi saturi con olio EVO, pesce azzurro, legumi e avena (fibre solubili)',
+        'Rivalutare profilo lipidico completo (LDL, ApoB, Lipoproteina(a)) con il MMG',
+      ],
+      actionSummary:
+        'Il colesterolo Non-HDL concentra le lipoproteine aterogene responsabili della placca arteriosa ed è un driver diretto di ESC SCORE2.',
+      guideline: 'ESC/EAS Dyslipidaemia · ESC SCORE2 2021',
+      domains: 'Cardiovascolare',
+    });
+  } else if (totalChol === null || hdlChol === null) {
+    advice.push({
+      id: 'advice_lipids_missing',
+      factorKey: 'lipids',
+      iconCategory: 'lipids',
+      severity: 'info',
+      severityLabel: 'Approfondimento utile',
+      title: 'Completamento profilo lipidico da esami ematici',
+      triggerMetric: 'Colesterolo totale o HDL non inseriti (stima su mediane UE)',
+      suggestedActions: [
+        'Richiedere Colesterolo Totale, HDL, LDL e Trigliceridi al prossimo prelievo',
+        'Aggiornare i valori in Valutazione per calibrare al meglio ESC SCORE2',
+      ],
+      actionSummary:
+        'Inserire i valori reali da laboratorio elimina la stima su mediane europee e migliora l’accuratezza della fascia cardiovascolare.',
+      guideline: 'ESC SCORE2 2021 Calibration Standard',
+      domains: 'Cardiovascolare',
+    });
+  }
+
+  // 9. Sonno e protezione UV
+  if (
+    computedProfile.sleepHoursPerNight < 6.5 ||
+    computedProfile.sleepHoursPerNight > 9.5 ||
+    computedProfile.uvProtection === 'rare'
+  ) {
+    advice.push({
+      id: 'advice_sleep_uv',
+      factorKey: 'sleep_uv',
+      iconCategory: 'sleep_uv',
+      severity: 'info',
+      severityLabel: 'Approfondimento utile',
+      title: 'Regolarizzazione del sonno e fotoprotezione UV',
+      triggerMetric: `Sonno ${computedProfile.sleepHoursPerNight} h/notte · Protezione UV ${
+        computedProfile.uvProtection === 'rare'
+          ? 'rara'
+          : computedProfile.uvProtection === 'occasional'
+            ? 'occasionale'
+            : 'costante'
+      }`,
+      suggestedActions: [
+        'Regolarizzare il sonno verso 7–8 ore/notte con orari costanti',
+        'Fotoprotezione SPF 30+/50+ nelle esposizioni dirette e controllo periodico dei nei',
+      ],
+      actionSummary:
+        'Qualità del sonno e protezione dai raggi UV (IARC Gruppo 1) completano la prevenzione cardiometabolica e dermatologica.',
+      guideline: 'AHA Life’s Essential 8 · Codice Europeo Contro il Cancro',
+      domains: 'Cardiovascolare · Oncologico',
+    });
+  }
+
+  // Profilo già ottimale
+  if (advice.length === 0) {
+    advice.push({
+      id: 'advice_optimal',
+      factorKey: 'maintenance',
+      iconCategory: 'protective',
+      severity: 'positive',
+      severityLabel: 'Profilo protettivo',
+      title: 'Mantenimento dei fattori protettivi attuali',
+      triggerMetric: `CV ${result.cardiovascular.scoreNumeric}% · FINDRISC ${result.metabolic.scoreNumeric}/26 pt · Onco ${result.oncologic.scoreNumeric}/100`,
+      suggestedActions: [
+        'Mantenere l’attuale routine di movimento, alimentazione mediterranea e astensione da fumo/alcol',
+        'Programmare controlli annuali di pressione, peso e screening SSN per fascia d’età',
+      ],
+      actionSummary:
+        'Tutti i principali parametri modificabili rientrano già nei target preventivi delle linee guida internazionali.',
+      guideline: 'ESC 2021 · WHO 2020 · WCRF/AICR 2018',
+      domains: 'Cardiovascolare · Diabete · Oncologico',
+    });
+  }
+
+  const severityOrder: Record<AdviceSeverity, number> = {
+    urgent: 0,
+    warning: 1,
+    info: 2,
+    positive: 3,
+  };
+  return advice.sort((a, b) => severityOrder[a.severity] - severityOrder[b.severity]);
 }
 
 function getTierPresentation(tier: RiskTier): { symbol: string; textClass: string } {
@@ -271,6 +592,11 @@ export function RiskDashboard({
     [sortedTimeline, currentRecord, selectedBaselineRecord, activeParams]
   );
 
+  const personalizedAdvice = useMemo(
+    () => getPersonalizedAdvice(profile, result, activeParams),
+    [profile, result, activeParams]
+  );
+
   const interventionPlan = useMemo(
     () =>
       buildPersonalizedInterventionPlan(
@@ -286,6 +612,15 @@ export function RiskDashboard({
     const el = document.getElementById('piano-intervento');
     if (el) {
       el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+  };
+
+  const handleJumpToFactor = (factorKey: PersonalizedAdviceItem['factorKey']) => {
+    const target =
+      document.querySelector(`[data-testid="intervention-item-${factorKey}"]`) ||
+      document.getElementById('piano-intervento');
+    if (target) {
+      target.scrollIntoView({ behavior: 'smooth', block: 'center' });
     }
   };
 
@@ -412,6 +747,46 @@ export function RiskDashboard({
           accentClass="bg-teal-50 text-teal-700"
           topBorderClass="border-t-teal-500"
         />
+      </section>
+
+      {/* Personalized Advice Alert/Callout Summary (generated by getPersonalizedAdvice) */}
+      <section
+        aria-labelledby="personalized-advice-heading"
+        data-testid="personalized-advice-section"
+        className="bg-white border border-stone-200 rounded-xl p-5 sm:p-6 space-y-4 shadow-[0_1px_4px_rgba(15,23,42,0.03)]"
+      >
+        <div className="flex flex-col sm:flex-row sm:items-baseline justify-between gap-2 border-b border-stone-100 pb-3">
+          <div>
+            <h2
+              id="personalized-advice-heading"
+              className="text-base font-bold tracking-tight text-slate-900"
+            >
+              Azioni Suggerite dal Tuo Profilo
+            </h2>
+            <p className="text-xs text-slate-600 mt-0.5">
+              Avvisi operativi generati direttamente dai tuoi parametri inseriti e dai punteggi di
+              rischio calcolati.
+            </p>
+          </div>
+          <span className="text-xs font-mono tabular-nums text-slate-500 whitespace-nowrap">
+            {personalizedAdvice.length}{' '}
+            {personalizedAdvice.length === 1 ? 'indicazione' : 'indicazioni'}
+          </span>
+        </div>
+
+        <div
+          className={`grid grid-cols-1 gap-3.5 ${
+            personalizedAdvice.length > 1 ? 'md:grid-cols-2' : ''
+          }`}
+        >
+          {personalizedAdvice.map((item) => (
+            <HealthAdviceAlert
+              key={item.id}
+              item={item}
+              onJumpToFactor={handleJumpToFactor}
+            />
+          ))}
+        </div>
       </section>
 
       {/* Personalized "Where & How to Intervene" Plan + Live Combined Risk Simulator */}
