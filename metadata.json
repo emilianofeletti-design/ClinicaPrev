@@ -1,0 +1,6 @@
+{
+  "name": "ClinicaPrev — Calcolo Rischio Clinico & Osservatorio PubMed",
+  "description": "Piattaforma di valutazione del rischio oncologico, cardiovascolare e metabolico basata su protocolli clinici internazionali validati, con ricerca fonti IA in tempo reale e monitoraggio mensile PubMed e Google Scholar.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

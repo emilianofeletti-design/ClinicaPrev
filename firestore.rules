@@ -1,0 +1,329 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // 1. Global Safety Net (Default-Deny)
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // 2. Hardened Global Primitives
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isVerifiedUser() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+
+    function isAdmin() {
+      return isVerifiedUser() && (
+        request.auth.token.email == 'emiliano.feletti@gmail.com' ||
+        exists(/databases/$(database)/documents/admins/$(request.auth.uid))
+      );
+    }
+
+    // 3. Entity Validation Blueprints (Anti-Update-Gap & Guardrail Enforcement)
+    function isValidClinicalParameters(data) {
+      return data.keys().hasAll([
+          'version',
+          'updatedAt',
+          'updatedBy',
+          'updateMode',
+          'changeSummary',
+          'dailyStepsOptimalThreshold',
+          'dailyStepsLowThreshold',
+          'whoWeeklyMinutesTarget',
+          'upfHighRiskOncoPoints',
+          'redMeatWeeklyLimit',
+          'fruitVegDailyTarget',
+          'alcoholLowRiskWeeklyLimit',
+          'euDefaultTotalCholMgDl',
+          'euPopCvdMedianMultiplier',
+          'euPopOncoMedianOffset',
+          'score2RegionCalibrationFactor',
+          'findriscHighRiskCutoff',
+          'wcrfRelativeRiskSlope'
+        ]) &&
+        data.keys().hasOnly([
+          'version',
+          'updatedAt',
+          'updatedBy',
+          'updateMode',
+          'changeSummary',
+          'dailyStepsOptimalThreshold',
+          'dailyStepsLowThreshold',
+          'whoWeeklyMinutesTarget',
+          'upfHighRiskOncoPoints',
+          'redMeatWeeklyLimit',
+          'fruitVegDailyTarget',
+          'alcoholLowRiskWeeklyLimit',
+          'euDefaultTotalCholMgDl',
+          'euPopCvdMedianMultiplier',
+          'euPopOncoMedianOffset',
+          'score2RegionCalibrationFactor',
+          'findriscHighRiskCutoff',
+          'wcrfRelativeRiskSlope'
+        ]) &&
+        data.version is string && data.version.size() >= 2 && data.version.size() <= 24 &&
+        data.version.matches('^v[0-9]+\\.[0-9]+(\\.[0-9]+)?$') &&
+        data.updatedAt is timestamp && data.updatedAt == request.time &&
+        data.updatedBy is string && data.updatedBy.size() >= 2 && data.updatedBy.size() <= 120 &&
+        data.updateMode in ['baseline', 'guarded_auto', 'manual_review', 'rollback'] &&
+        data.changeSummary is string && data.changeSummary.size() >= 4 && data.changeSummary.size() <= 500 &&
+        data.dailyStepsOptimalThreshold is number && data.dailyStepsOptimalThreshold >= 6000 && data.dailyStepsOptimalThreshold <= 10000 &&
+        data.dailyStepsLowThreshold is number && data.dailyStepsLowThreshold >= 3000 && data.dailyStepsLowThreshold <= 5500 &&
+        data.whoWeeklyMinutesTarget is number && data.whoWeeklyMinutesTarget >= 120 && data.whoWeeklyMinutesTarget <= 210 &&
+        data.upfHighRiskOncoPoints is number && data.upfHighRiskOncoPoints >= 4 && data.upfHighRiskOncoPoints <= 9 &&
+        data.redMeatWeeklyLimit is number && data.redMeatWeeklyLimit >= 2 && data.redMeatWeeklyLimit <= 4 &&
+        data.fruitVegDailyTarget is number && data.fruitVegDailyTarget >= 4 && data.fruitVegDailyTarget <= 7 &&
+        data.alcoholLowRiskWeeklyLimit is number && data.alcoholLowRiskWeeklyLimit >= 3 && data.alcoholLowRiskWeeklyLimit <= 10 &&
+        data.euDefaultTotalCholMgDl is number && data.euDefaultTotalCholMgDl >= 180 && data.euDefaultTotalCholMgDl <= 220 &&
+        data.euPopCvdMedianMultiplier is number && data.euPopCvdMedianMultiplier >= 0.85 && data.euPopCvdMedianMultiplier <= 1.15 &&
+        data.euPopOncoMedianOffset is number && data.euPopOncoMedianOffset >= -5 && data.euPopOncoMedianOffset <= 5 &&
+        data.score2RegionCalibrationFactor is number && data.score2RegionCalibrationFactor >= 0.75 && data.score2RegionCalibrationFactor <= 1.05 &&
+        data.findriscHighRiskCutoff is number && data.findriscHighRiskCutoff >= 10 && data.findriscHighRiskCutoff <= 15 &&
+        data.wcrfRelativeRiskSlope is number && data.wcrfRelativeRiskSlope >= 1.8 && data.wcrfRelativeRiskSlope <= 2.5;
+    }
+
+    function isValidParameterProposal(data) {
+      return data.keys().hasAll([
+          'parameterKey',
+          'parameterLabel',
+          'governanceTier',
+          'status',
+          'currentValue',
+          'proposedValue',
+          'unit',
+          'sourceAuthority',
+          'pmidOrReference',
+          'sourceUrl',
+          'rationale',
+          'createdAt',
+          'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'parameterKey',
+          'parameterLabel',
+          'governanceTier',
+          'status',
+          'currentValue',
+          'proposedValue',
+          'unit',
+          'sourceAuthority',
+          'pmidOrReference',
+          'sourceUrl',
+          'rationale',
+          'createdAt',
+          'updatedAt',
+          'reviewedBy'
+        ]) &&
+        data.parameterKey in [
+          'dailyStepsOptimalThreshold',
+          'dailyStepsLowThreshold',
+          'whoWeeklyMinutesTarget',
+          'upfHighRiskOncoPoints',
+          'redMeatWeeklyLimit',
+          'fruitVegDailyTarget',
+          'alcoholLowRiskWeeklyLimit',
+          'euDefaultTotalCholMgDl',
+          'euPopCvdMedianMultiplier',
+          'euPopOncoMedianOffset',
+          'score2RegionCalibrationFactor',
+          'findriscHighRiskCutoff',
+          'wcrfRelativeRiskSlope'
+        ] &&
+        data.parameterLabel is string && data.parameterLabel.size() >= 3 && data.parameterLabel.size() <= 140 &&
+        data.governanceTier in ['guarded_auto', 'manual_review'] &&
+        data.status in ['pending', 'approved', 'auto_applied', 'rejected'] &&
+        data.currentValue is number &&
+        data.proposedValue is number &&
+        data.unit is string && data.unit.size() >= 1 && data.unit.size() <= 40 &&
+        data.sourceAuthority is string && data.sourceAuthority.size() >= 2 && data.sourceAuthority.size() <= 140 &&
+        data.pmidOrReference is string && data.pmidOrReference.size() >= 3 && data.pmidOrReference.size() <= 120 &&
+        data.sourceUrl is string && data.sourceUrl.size() >= 10 && data.sourceUrl.size() <= 300 &&
+        data.sourceUrl.matches('^https://.*$') &&
+        data.rationale is string && data.rationale.size() >= 10 && data.rationale.size() <= 700 &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp && data.updatedAt == request.time &&
+        (!('reviewedBy' in data) || (data.reviewedBy is string && data.reviewedBy.size() <= 120));
+    }
+
+    function isValidParameterRevision(data) {
+      return data.keys().hasAll([
+          'version',
+          'createdAt',
+          'actorEmail',
+          'updateMode',
+          'changeSummary',
+          'snapshot'
+        ]) &&
+        data.keys().hasOnly([
+          'version',
+          'createdAt',
+          'actorEmail',
+          'updateMode',
+          'changeSummary',
+          'snapshot'
+        ]) &&
+        data.version is string && data.version.size() >= 2 && data.version.size() <= 24 &&
+        data.version.matches('^v[0-9]+\\.[0-9]+(\\.[0-9]+)?$') &&
+        data.createdAt is timestamp && data.createdAt == request.time &&
+        data.actorEmail is string && data.actorEmail.size() >= 3 && data.actorEmail.size() <= 120 &&
+        data.updateMode in ['baseline', 'guarded_auto', 'manual_review', 'rollback'] &&
+        data.changeSummary is string && data.changeSummary.size() >= 4 && data.changeSummary.size() <= 500 &&
+        data.snapshot is map &&
+        data.snapshot.keys().hasOnly([
+          'dailyStepsOptimalThreshold',
+          'dailyStepsLowThreshold',
+          'whoWeeklyMinutesTarget',
+          'upfHighRiskOncoPoints',
+          'redMeatWeeklyLimit',
+          'fruitVegDailyTarget',
+          'alcoholLowRiskWeeklyLimit',
+          'euDefaultTotalCholMgDl',
+          'euPopCvdMedianMultiplier',
+          'euPopOncoMedianOffset',
+          'score2RegionCalibrationFactor',
+          'findriscHighRiskCutoff',
+          'wcrfRelativeRiskSlope'
+        ]);
+    }
+
+    function isValidMonitoringDigest(data) {
+      return data.keys().hasAll([
+          'lastMonthlyScanIso',
+          'cadenceDays',
+          'livePubMedCount',
+          'sourcesTracked',
+          'monthlySeries',
+          'emergingTrends',
+          'publications',
+          'groundingSources',
+          'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'lastMonthlyScanIso',
+          'cadenceDays',
+          'livePubMedCount',
+          'aiSynthesisNote',
+          'sourcesTracked',
+          'monthlySeries',
+          'emergingTrends',
+          'publications',
+          'groundingSources',
+          'updatedAt'
+        ]) &&
+        data.lastMonthlyScanIso is string && data.lastMonthlyScanIso.size() >= 10 && data.lastMonthlyScanIso.size() <= 40 &&
+        data.cadenceDays is number && data.cadenceDays >= 1 && data.cadenceDays <= 365 &&
+        data.livePubMedCount is number && data.livePubMedCount >= 0 && data.livePubMedCount <= 200 &&
+        (!('aiSynthesisNote' in data) || data.aiSynthesisNote == null || (data.aiSynthesisNote is string && data.aiSynthesisNote.size() <= 4000)) &&
+        data.sourcesTracked is list && data.sourcesTracked.size() >= 1 && data.sourcesTracked.size() <= 12 &&
+        data.sourcesTracked[0] is string &&
+        data.monthlySeries is list && data.monthlySeries.size() >= 1 && data.monthlySeries.size() <= 24 &&
+        data.monthlySeries[0] is map &&
+        data.emergingTrends is list && data.emergingTrends.size() >= 1 && data.emergingTrends.size() <= 20 &&
+        data.emergingTrends[0] is map &&
+        data.publications is list && data.publications.size() >= 1 && data.publications.size() <= 60 &&
+        data.publications[0] is map &&
+        data.groundingSources is list && data.groundingSources.size() <= 20 &&
+        (data.groundingSources.size() == 0 || data.groundingSources[0] is map) &&
+        data.updatedAt is timestamp && data.updatedAt == request.time;
+    }
+
+    // 4. Collection Rules
+
+    // Public non-PII active clinical parameters (singleton docId: 'active')
+    match /clinical_parameters/{paramDocId} {
+      allow get: if isValidId(paramDocId) && paramDocId == 'active';
+      allow list: if false;
+      allow create: if isAdmin() && isValidId(paramDocId) && paramDocId == 'active' && isValidClinicalParameters(incoming());
+      allow update: if isAdmin() && isValidId(paramDocId) && paramDocId == 'active' && isValidClinicalParameters(incoming()) && (
+        incoming().diff(existing()).affectedKeys().hasOnly([
+          'version',
+          'updatedAt',
+          'updatedBy',
+          'updateMode',
+          'changeSummary',
+          'dailyStepsOptimalThreshold',
+          'dailyStepsLowThreshold',
+          'whoWeeklyMinutesTarget',
+          'upfHighRiskOncoPoints',
+          'redMeatWeeklyLimit',
+          'fruitVegDailyTarget',
+          'alcoholLowRiskWeeklyLimit',
+          'euDefaultTotalCholMgDl',
+          'euPopCvdMedianMultiplier',
+          'euPopOncoMedianOffset',
+          'score2RegionCalibrationFactor',
+          'findriscHighRiskCutoff',
+          'wcrfRelativeRiskSlope'
+        ])
+      );
+      allow delete: if false;
+    }
+
+    // Public non-PII parameter update proposals (guarded_auto & manual_review)
+    match /parameter_proposals/{proposalId} {
+      allow get: if isValidId(proposalId);
+      allow list: if resource.data.governanceTier in ['guarded_auto', 'manual_review'];
+      allow create: if isAdmin() && isValidId(proposalId) && isValidParameterProposal(incoming()) && incoming().createdAt == request.time;
+      allow update: if isAdmin() && isValidId(proposalId) && isValidParameterProposal(incoming()) &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().parameterKey == existing().parameterKey &&
+        (
+          incoming().diff(existing()).affectedKeys().hasOnly(['status', 'updatedAt', 'reviewedBy'])
+        );
+      allow delete: if false;
+    }
+
+    // Public non-PII immutable revision history for transparent rollback
+    match /parameter_revisions/{revisionId} {
+      allow get: if isValidId(revisionId);
+      allow list: if resource.data.updateMode in ['baseline', 'guarded_auto', 'manual_review', 'rollback'];
+      allow create: if isAdmin() && isValidId(revisionId) && isValidParameterRevision(incoming());
+      allow update: if false;
+      allow delete: if false;
+    }
+
+    // Public non-PII shared 30-day academic research digest (singleton docId: 'latest')
+    match /monitoring_digests/{digestId} {
+      allow get: if isValidId(digestId) && digestId == 'latest';
+      allow list: if false;
+      allow create: if isAdmin() && isValidId(digestId) && digestId == 'latest' && isValidMonitoringDigest(incoming());
+      allow update: if isAdmin() && isValidId(digestId) && digestId == 'latest' && isValidMonitoringDigest(incoming()) && (
+        incoming().diff(existing()).affectedKeys().hasOnly([
+          'lastMonthlyScanIso',
+          'cadenceDays',
+          'livePubMedCount',
+          'aiSynthesisNote',
+          'sourcesTracked',
+          'monthlySeries',
+          'emergingTrends',
+          'publications',
+          'groundingSources',
+          'updatedAt'
+        ])
+      );
+      allow delete: if false;
+    }
+
+    // Strictly isolated admin registry (never readable or writable from clients)
+    match /admins/{adminUid} {
+      allow read, write: if false;
+    }
+  }
+}
