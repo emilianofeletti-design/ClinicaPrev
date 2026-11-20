@@ -139,10 +139,11 @@ export function ResearchTrendsDashboard({
           return;
         }
 
-        const isGitHubPages =
-          typeof window !== 'undefined' && window.location.hostname.endsWith('.github.io');
+        const isStaticHost =
+          import.meta.env.VITE_STATIC_ONLY === 'true' ||
+          (typeof window !== 'undefined' && window.location.hostname.endsWith('.github.io'));
 
-        const apiResult = isGitHubPages
+        const apiResult = isStaticHost
           ? null
           : await fetch('/api/monitoring/digest')
               .then(async (res) => {

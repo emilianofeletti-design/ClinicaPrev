@@ -2,7 +2,7 @@ name: Deploy ClinicaPrev to GitHub Pages
 
 on:
   push:
-    branches: ['main']
+    branches: ['main', 'master']
   workflow_dispatch:
 
 permissions:
@@ -24,13 +24,14 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 20
-          cache: npm
+          node-version: '22'
 
       - name: Install dependencies
-        run: npm ci
+        run: npm install --no-audit --no-fund
 
       - name: Build Vite production bundle
+        env:
+          VITE_STATIC_ONLY: 'true'
         run: npm run build
 
       - name: Setup GitHub Pages
