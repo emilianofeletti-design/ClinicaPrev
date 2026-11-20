@@ -1,4 +1,3 @@
-import { onAuthStateChanged, type User } from 'firebase/auth';
 import { FileUp } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 import { AssessmentForm } from './components/AssessmentForm';
@@ -8,25 +7,10 @@ import { ResearchTrendsDashboard } from './components/ResearchTrendsDashboard';
 import { RiskDashboard } from './components/RiskDashboard';
 import { SourceReaderView } from './components/SourceReaderView';
 import { TopNavBar, type AppSection } from './components/TopNavBar';
-import {
-  auth,
-  isVerifiedCurator,
-  signInCuratorWithGoogle,
-  signOutCurator,
-} from './firebase';
-import {
-  fetchActiveClinicalParametersFromFirestore,
-  fetchParameterProposalsFromFirestore,
-  fetchParameterRevisionsFromFirestore,
-  publishParameterChangeToFirestore,
-  rejectProposalInFirestore,
-  seedBaselineToFirestore,
-} from './services/firestoreClinicalStore';
 import type {
   ClinicalAssessmentResult,
   ClinicalProfileDraft,
   ClinicalProfileInput,
-  MonitoringDigestResponse,
   ValidationErrors,
 } from './types/clinical';
 import {
@@ -73,7 +57,7 @@ export default function App() {
   const [importError, setImportError] = useState<string | null>(null);
   const emptyDashboardFileRef = useRef<HTMLInputElement | null>(null);
 
-  // Public shared clinical parameters & governance state (hydrated from Firebase Firestore)
+  // Versioned clinical parameters & local governance simulation state
   const [activeParams, setActiveParams] = useState<ClinicalParameterSet>(
     DEFAULT_CLINICAL_PARAMETERS
   );
@@ -83,40 +67,8 @@ export default function App() {
   const [revisions, setRevisions] = useState<ParameterRevisionRecord[]>(
     BASELINE_PARAMETER_REVISIONS
   );
-  const [firestoreSynced, setFirestoreSynced] = useState(false);
-
-  // Optional curator auth (only for persisting shared parameter updates to Firestore)
-  const [curatorUser, setCuratorUser] = useState<User | null>(null);
-  const [govBusy, setGovBusy] = useState(false);
   const [govStatus, setGovStatus] = useState<string | null>(null);
   const [govError, setGovError] = useState<string | null>(null);
-
-  useEffect(() => {
-    const unsub = onAuthStateChanged(auth, (user) => {
-      setCuratorUser(user);
-    });
-    return () => unsub();
-  }, []);
-
-  useEffect(() => {
-    let mounted = true;
-    const hydrateFromFirestore = async () => {
-      const [paramsRes, proposalsRes, revisionsRes] = await Promise.all([
-        fetchActiveClinicalParametersFromFirestore(),
-        fetchParameterProposalsFromFirestore(),
-        fetchParameterRevisionsFromFirestore(),
-      ]);
-      if (!mounted) return;
-      setActiveParams(paramsRes.params);
-      setProposals(proposalsRes.proposals);
-      setRevisions(revisionsRes.revisions);
-      setFirestoreSynced(paramsRes.fromFirestore);
-    };
-    void hydrateFromFirestore();
-    return () => {
-      mounted = false;
-    };
-  }, []);
 
   // Live recomputation whenever clinical parameter version changes
   useEffect(() => {
@@ -186,7 +138,10 @@ export default function App() {
     triggerArchiveDownload(archive);
   };
 
-  const handleImportArchiveFile = (file: File) => {
+  const handleImportArchiveFile = (
+    file: File,
+    options?: { stayOnDashboard?: boolean }
+  ) => {
     setImportError(null);
     const reader = new FileReader();
     reader.onload = () => {
@@ -197,6 +152,10 @@ export default function App() {
         return;
       }
       setPersonalTimeline(parsed.archive.records);
+      if (options?.stayOnDashboard && computedProfile && result) {
+        window.scrollTo({ top: 0, behavior: 'smooth' });
+        return;
+      }
       setDraft(profileToDraft(parsed.latestRecord.profile));
       setErrors({});
       setActiveSection('assessment');
@@ -208,171 +167,76 @@ export default function App() {
     reader.readAsText(file, 'utf-8');
   };
 
-  const handleCuratorSignIn = async () => {
+  const handleRunGuardedAutoUpdates = () => {
     setGovError(null);
     setGovStatus(null);
-    try {
-      const user = await signInCuratorWithGoogle();
-      if (isVerifiedCurator(user)) {
-        setGovStatus(
-          `Accesso curatore confermato (${user.email}). Le modifiche ai parametri verranno salvate permanentemente su Firebase Firestore.`
-        );
-      } else {
-        setGovError(
-          `Account ${user.email ?? ''} autenticato come ospite: solo il curatore autorizzato può scrivere su Firestore.`
-        );
-      }
-    } catch (err) {
-      setGovError(
-        err instanceof Error ? err.message : 'Accesso Google annullato o non riuscito.'
-      );
+    const outcome = applyGuardedAutoUpdates(
+      activeParams,
+      proposals,
+      'sessione-locale@clinicaprev.org'
+    );
+    if (!outcome.revision || outcome.appliedProposals.length === 0) {
+      setGovStatus('Nessun parametro idoneo da aggiornare entro i guardrail.');
+      return;
     }
+
+    setActiveParams(outcome.nextParams);
+    setProposals(outcome.updatedProposals);
+    setRevisions((prev) => [outcome.revision!, ...prev]);
+    setGovStatus(
+      `Applicata nella sessione locale la versione ${outcome.nextParams.version} (${outcome.appliedProposals.length} parametri aggiornati entro guardrail).`
+    );
   };
 
-  const handleCuratorSignOut = async () => {
-    await signOutCurator();
-    setGovStatus('Sessione curatore chiusa.');
-  };
-
-  const handleSeedFirestore = async (digest: MonitoringDigestResponse | null) => {
-    setGovBusy(true);
+  const handleApproveProposal = (proposal: ParameterUpdateProposal) => {
     setGovError(null);
     setGovStatus(null);
-    try {
-      await seedBaselineToFirestore(digest);
-      setFirestoreSynced(true);
-      setGovStatus(
-        'Database Firebase Firestore inizializzato con parametri v1.0, proposte e bollettino scientifico.'
-      );
-    } catch (err) {
-      setGovError(
-        err instanceof Error ? err.message : 'Errore durante l’inizializzazione di Firestore.'
-      );
-    } finally {
-      setGovBusy(false);
+    const outcome = applyApprovedProposal(
+      activeParams,
+      proposal,
+      'sessione-locale@clinicaprev.org'
+    );
+    if (!outcome.ok || !outcome.revision) {
+      setGovError(outcome.reason || 'La proposta non supera i controlli di sicurezza.');
+      return;
     }
+
+    setActiveParams(outcome.nextParams);
+    setProposals((prev) =>
+      prev.map((p) => (p.id === proposal.id ? outcome.updatedProposal : p))
+    );
+    setRevisions((prev) => [outcome.revision!, ...prev]);
+    setGovStatus(
+      `Proposta applicata nella sessione locale come versione ${outcome.nextParams.version}.`
+    );
   };
 
-  const handleRunGuardedAutoUpdates = async () => {
-    setGovBusy(true);
+  const handleRejectProposal = (proposal: ParameterUpdateProposal) => {
     setGovError(null);
     setGovStatus(null);
-    try {
-      const actor = curatorUser?.email || 'auto-guardrail@clinicaprev.org';
-      const outcome = applyGuardedAutoUpdates(activeParams, proposals, actor);
-      if (!outcome.revision || outcome.appliedProposals.length === 0) {
-        setGovStatus('Nessun parametro automatico idoneo da aggiornare entro i guardrail.');
-        return;
-      }
-
-      if (isVerifiedCurator(curatorUser)) {
-        await publishParameterChangeToFirestore(
-          outcome.nextParams,
-          outcome.revision,
-          outcome.appliedProposals
-        );
-        setFirestoreSynced(true);
-      }
-
-      setActiveParams(outcome.nextParams);
-      setProposals(outcome.updatedProposals);
-      setRevisions((prev) => [outcome.revision!, ...prev]);
-      setGovStatus(
-        isVerifiedCurator(curatorUser)
-          ? `Pubblicata su Firebase Firestore la versione ${outcome.nextParams.version} (${outcome.appliedProposals.length} parametri aggiornati entro guardrail).`
-          : `Simulata localmente la versione ${outcome.nextParams.version} (${outcome.appliedProposals.length} parametri entro guardrail). Accedi come Curatore per salvarla su Firestore.`
-      );
-    } catch (err) {
-      setGovError(
-        err instanceof Error ? err.message : 'Errore durante l’auto-aggiornamento guardrail.'
-      );
-    } finally {
-      setGovBusy(false);
-    }
+    setProposals((prev) =>
+      prev.map((p) =>
+        p.id === proposal.id
+          ? { ...p, status: 'rejected', updatedAtIso: new Date().toISOString() }
+          : p
+      )
+    );
+    setGovStatus(`Proposta «${proposal.parameterLabel}» scartata nella sessione locale.`);
   };
 
-  const handleApproveProposal = async (proposal: ParameterUpdateProposal) => {
-    setGovBusy(true);
+  const handleRollbackRevision = (targetRev: ParameterRevisionRecord) => {
     setGovError(null);
     setGovStatus(null);
-    try {
-      const actor = curatorUser?.email || 'sessione-locale@clinicaprev.org';
-      const outcome = applyApprovedProposal(activeParams, proposal, actor);
-      if (!outcome.ok || !outcome.revision) {
-        setGovError(outcome.reason || 'La proposta non supera i controlli di sicurezza.');
-        return;
-      }
-
-      if (isVerifiedCurator(curatorUser)) {
-        await publishParameterChangeToFirestore(outcome.nextParams, outcome.revision, [
-          outcome.updatedProposal,
-        ]);
-        setFirestoreSynced(true);
-      }
-
-      setActiveParams(outcome.nextParams);
-      setProposals((prev) =>
-        prev.map((p) => (p.id === proposal.id ? outcome.updatedProposal : p))
-      );
-      setRevisions((prev) => [outcome.revision!, ...prev]);
-      setGovStatus(
-        isVerifiedCurator(curatorUser)
-          ? `Proposta approvata e pubblicata su Firestore come versione ${outcome.nextParams.version}.`
-          : `Proposta applicata nella sessione corrente (${outcome.nextParams.version}). Accedi come Curatore per renderla permanente su Firestore.`
-      );
-    } catch (err) {
-      setGovError(
-        err instanceof Error ? err.message : 'Errore durante l’approvazione della proposta.'
-      );
-    } finally {
-      setGovBusy(false);
-    }
-  };
-
-  const handleRejectProposal = async (proposal: ParameterUpdateProposal) => {
-    setGovBusy(true);
-    setGovError(null);
-    setGovStatus(null);
-    try {
-      if (isVerifiedCurator(curatorUser)) {
-        await rejectProposalInFirestore(proposal);
-      }
-      setProposals((prev) =>
-        prev.map((p) =>
-          p.id === proposal.id
-            ? { ...p, status: 'rejected', updatedAtIso: new Date().toISOString() }
-            : p
-        )
-      );
-      setGovStatus(`Proposta «${proposal.parameterLabel}» rifiutata.`);
-    } catch (err) {
-      setGovError(err instanceof Error ? err.message : 'Impossibile rifiutare la proposta.');
-    } finally {
-      setGovBusy(false);
-    }
-  };
-
-  const handleRollbackRevision = async (targetRev: ParameterRevisionRecord) => {
-    setGovBusy(true);
-    setGovError(null);
-    setGovStatus(null);
-    try {
-      const actor = curatorUser?.email || 'sessione-locale@clinicaprev.org';
-      const outcome = rollbackToRevision(activeParams, targetRev, actor);
-      if (isVerifiedCurator(curatorUser)) {
-        await publishParameterChangeToFirestore(outcome.nextParams, outcome.revision);
-        setFirestoreSynced(true);
-      }
-      setActiveParams(outcome.nextParams);
-      setRevisions((prev) => [outcome.revision, ...prev]);
-      setGovStatus(
-        `Ripristinati i parametri della versione ${targetRev.version} (nuova revisione ${outcome.nextParams.version}).`
-      );
-    } catch (err) {
-      setGovError(err instanceof Error ? err.message : 'Errore durante il rollback.');
-    } finally {
-      setGovBusy(false);
-    }
+    const outcome = rollbackToRevision(
+      activeParams,
+      targetRev,
+      'sessione-locale@clinicaprev.org'
+    );
+    setActiveParams(outcome.nextParams);
+    setRevisions((prev) => [outcome.revision, ...prev]);
+    setGovStatus(
+      `Ripristinati i parametri della versione ${targetRev.version} (nuova revisione ${outcome.nextParams.version}).`
+    );
   };
 
   const handleTopBarPrimaryAction = () => {
@@ -440,11 +304,14 @@ export default function App() {
                 <RiskDashboard
                   profile={computedProfile}
                   result={result}
+                  activeParams={activeParams}
                   personalTimeline={personalTimeline}
                   importError={importError}
                   onEditParameters={() => handleNavigate('assessment')}
                   onExportArchiveFile={handleExportArchiveFile}
-                  onImportArchiveFile={handleImportArchiveFile}
+                  onImportArchiveFile={(file) =>
+                    handleImportArchiveFile(file, { stayOnDashboard: true })
+                  }
                   onClearTimeline={() => setPersonalTimeline([])}
                   onOpenLegal={() => handleNavigate('guide')}
                   onOpenResearch={() => handleNavigate('research')}
@@ -510,14 +377,8 @@ export default function App() {
                 activeParams={activeParams}
                 proposals={proposals}
                 revisions={revisions}
-                firestoreSynced={firestoreSynced}
-                curatorUser={curatorUser}
-                busyAction={govBusy}
                 statusBanner={govStatus}
                 errorBanner={govError}
-                onCuratorSignIn={handleCuratorSignIn}
-                onCuratorSignOut={handleCuratorSignOut}
-                onSeedFirestore={handleSeedFirestore}
                 onRunGuardedAutoUpdates={handleRunGuardedAutoUpdates}
                 onApproveProposal={handleApproveProposal}
                 onRejectProposal={handleRejectProposal}

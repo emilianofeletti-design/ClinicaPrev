@@ -18,12 +18,6 @@ import {
   XAxis,
   YAxis,
 } from 'recharts';
-import type { User } from 'firebase/auth';
-import { isVerifiedCurator } from '../firebase';
-import {
-  fetchMonitoringDigestFromFirestore,
-  saveMonitoringDigestToFirestore,
-} from '../services/firestoreClinicalStore';
 import type {
   MonitoringDigestResponse,
   ResearchDatabase,
@@ -59,14 +53,8 @@ interface ResearchTrendsDashboardProps {
   activeParams: ClinicalParameterSet;
   proposals: ParameterUpdateProposal[];
   revisions: ParameterRevisionRecord[];
-  firestoreSynced: boolean;
-  curatorUser: User | null;
-  busyAction: boolean;
   statusBanner: string | null;
   errorBanner: string | null;
-  onCuratorSignIn: () => void;
-  onCuratorSignOut: () => void;
-  onSeedFirestore: (digest: MonitoringDigestResponse | null) => void;
   onRunGuardedAutoUpdates: () => void;
   onApproveProposal: (proposal: ParameterUpdateProposal) => void;
   onRejectProposal: (proposal: ParameterUpdateProposal) => void;
@@ -78,14 +66,8 @@ export function ResearchTrendsDashboard({
   activeParams,
   proposals,
   revisions,
-  firestoreSynced,
-  curatorUser,
-  busyAction,
   statusBanner,
   errorBanner,
-  onCuratorSignIn,
-  onCuratorSignOut,
-  onSeedFirestore,
   onRunGuardedAutoUpdates,
   onApproveProposal,
   onRejectProposal,
@@ -111,33 +93,25 @@ export function ResearchTrendsDashboard({
       try {
         // Read-only load of already stored archive (NEVER triggers an automatic live scan)
         const localDigest = readCachedLocalDigest();
-        const firestoreDigest = await fetchMonitoringDigestFromFirestore().catch(() => null);
-        if (!active) return;
 
         const isStaticHost =
           import.meta.env.VITE_STATIC_ONLY === 'true' ||
           (typeof window !== 'undefined' && window.location.hostname.endsWith('.github.io'));
 
-        const apiDigest =
-          firestoreDigest || isStaticHost
-            ? null
-            : await fetch('/api/monitoring/digest')
-                .then(async (res) => {
-                  if (!res.ok) return null;
-                  const contentType = res.headers.get('content-type') || '';
-                  if (!contentType.includes('application/json')) return null;
-                  return (await res.json()) as MonitoringDigestResponse;
-                })
-                .catch(() => null);
+        const apiDigest = isStaticHost
+          ? null
+          : await fetch('/api/monitoring/digest')
+              .then(async (res) => {
+                if (!res.ok) return null;
+                const contentType = res.headers.get('content-type') || '';
+                if (!contentType.includes('application/json')) return null;
+                return (await res.json()) as MonitoringDigestResponse;
+              })
+              .catch(() => null);
 
         if (!active) return;
         setDigest(
-          selectFreshestDigest([
-            firestoreDigest,
-            localDigest,
-            apiDigest,
-            buildStaticBaselineDigest(),
-          ])
+          selectFreshestDigest([localDigest, apiDigest, buildStaticBaselineDigest()])
         );
       } catch {
         if (active) {
@@ -184,9 +158,6 @@ export function ResearchTrendsDashboard({
 
       setDigest(updated);
       writeCachedLocalDigest(updated);
-      if (isVerifiedCurator(curatorUser)) {
-        await saveMonitoringDigestToFirestore(updated);
-      }
     } catch (err) {
       setScanError(
         err instanceof Error
@@ -426,19 +397,13 @@ export function ResearchTrendsDashboard({
             </div>
           </section>
 
-          {/* Hybrid Clinical Parameter Governance (Guarded Auto-Updates + Manual Review + Firestore) */}
+          {/* Clinical Parameter Transparency & Local Simulation */}
           <ParameterGovernancePanel
             activeParams={activeParams}
             proposals={proposals}
             revisions={revisions}
-            firestoreSynced={firestoreSynced}
-            curatorUser={curatorUser}
-            busyAction={busyAction}
             statusBanner={statusBanner}
             errorBanner={errorBanner}
-            onCuratorSignIn={onCuratorSignIn}
-            onCuratorSignOut={onCuratorSignOut}
-            onSeedFirestore={() => onSeedFirestore(digest)}
             onRunGuardedAutoUpdates={onRunGuardedAutoUpdates}
             onApproveProposal={onApproveProposal}
             onRejectProposal={onRejectProposal}

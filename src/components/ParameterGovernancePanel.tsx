@@ -1,11 +1,8 @@
 import {
   CheckCircle2,
-  Database,
   ExternalLink,
   History,
   Lock,
-  LogIn,
-  LogOut,
   RotateCcw,
   ShieldAlert,
   ShieldCheck,
@@ -13,9 +10,7 @@ import {
   Sparkles,
   XCircle,
 } from 'lucide-react';
-import type { User } from 'firebase/auth';
 import { useState } from 'react';
-import { isVerifiedCurator } from '../firebase';
 import {
   CLINICAL_PARAMETER_KEYS,
   PARAMETER_GUARDRAILS,
@@ -28,14 +23,8 @@ interface ParameterGovernancePanelProps {
   activeParams: ClinicalParameterSet;
   proposals: ParameterUpdateProposal[];
   revisions: ParameterRevisionRecord[];
-  firestoreSynced: boolean;
-  curatorUser: User | null;
-  busyAction: boolean;
   statusBanner: string | null;
   errorBanner: string | null;
-  onCuratorSignIn: () => void;
-  onCuratorSignOut: () => void;
-  onSeedFirestore: () => void;
   onRunGuardedAutoUpdates: () => void;
   onApproveProposal: (proposal: ParameterUpdateProposal) => void;
   onRejectProposal: (proposal: ParameterUpdateProposal) => void;
@@ -46,14 +35,8 @@ export function ParameterGovernancePanel({
   activeParams,
   proposals,
   revisions,
-  firestoreSynced,
-  curatorUser,
-  busyAction,
   statusBanner,
   errorBanner,
-  onCuratorSignIn,
-  onCuratorSignOut,
-  onSeedFirestore,
   onRunGuardedAutoUpdates,
   onApproveProposal,
   onRejectProposal,
@@ -61,7 +44,6 @@ export function ParameterGovernancePanel({
 }: ParameterGovernancePanelProps) {
   const [showAllGuardrails, setShowAllGuardrails] = useState(false);
 
-  const isCurator = isVerifiedCurator(curatorUser);
   const guardedAutoPending = proposals.filter(
     (p) => p.governanceTier === 'guarded_auto' && p.status === 'pending'
   );
@@ -80,72 +62,27 @@ export function ParameterGovernancePanel({
       aria-labelledby="parameter-governance-heading"
       className="bg-white border border-stone-200 rounded-2xl p-6 sm:p-7 space-y-6 shadow-sm"
     >
-      {/* Header + Firestore & Curator Status */}
-      <div className="flex flex-col lg:flex-row lg:items-start justify-between gap-4 border-b border-stone-200 pb-5">
-        <div className="space-y-1.5">
-          <div className="flex flex-wrap items-center gap-2 text-xs font-mono">
-            <span className="inline-flex items-center gap-1.5 font-semibold text-[#0D6E6E]">
-              <Database className="w-3.5 h-3.5" />
-              Firebase Firestore · Parametri {activeParams.version}
-            </span>
-            <span className="text-slate-400">·</span>
-            <span className={firestoreSynced ? 'text-emerald-700 font-medium' : 'text-amber-700 font-medium'}>
-              {firestoreSynced
-                ? 'Sincronizzato su database condiviso'
-                : 'Configurazione baseline attiva (pronta per sincronizzazione)'}
-            </span>
-          </div>
-          <h2 id="parameter-governance-heading" className="text-lg font-bold text-slate-900">
-            Aggiornamento Parametri di Calcolo (Auto-Guardrail + Revisione Manuale)
-          </h2>
-          <p className="text-xs sm:text-sm text-slate-600 max-w-3xl leading-relaxed">
-            I coefficienti clinici sono separati dal codice e versionati. I{' '}
-            <strong>fattori modificabili e i benchmark europei</strong> possono aggiornarsi in
-            automatico entro limiti di sicurezza rigidi (<em>guardrail</em>), mentre i{' '}
-            <strong>protocolli clinici primari</strong> (ESC SCORE2, FINDRISC, WCRF) restano
-            bloccati finché non ricevono approvazione manuale esplicita.
-          </p>
+      {/* Header */}
+      <div className="border-b border-stone-200 pb-5 space-y-1.5">
+        <div className="flex flex-wrap items-center gap-2 text-xs font-mono">
+          <span className="inline-flex items-center gap-1.5 font-semibold text-[#0D6E6E]">
+            <SlidersHorizontal className="w-3.5 h-3.5" />
+            Registro Parametri Clinici · Versione {activeParams.version}
+          </span>
+          <span className="text-slate-400">·</span>
+          <span className="text-emerald-700 font-medium">
+            Esecuzione 100% locale nel browser (nessun database remoto)
+          </span>
         </div>
-
-        {/* Optional Curator Auth (Visitors NEVER need to sign in) */}
-        <div className="flex flex-wrap items-center gap-2 shrink-0">
-          {curatorUser ? (
-            <>
-              <span className="text-xs text-slate-600 bg-[#FAF9F5] border border-stone-200 rounded-lg px-3 py-1.5">
-                {isCurator ? 'Curatore verificato: ' : 'Account ospite: '}
-                <strong className="text-slate-900">{curatorUser.email}</strong>
-              </span>
-              {isCurator && !firestoreSynced && (
-                <button
-                  type="button"
-                  disabled={busyAction}
-                  onClick={onSeedFirestore}
-                  className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-white bg-[#0D6E6E] rounded-lg hover:bg-[#0A5757] transition-colors cursor-pointer disabled:opacity-60"
-                >
-                  <Database className="w-3.5 h-3.5" />
-                  Inizializza Firestore
-                </button>
-              )}
-              <button
-                type="button"
-                onClick={onCuratorSignOut}
-                className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-slate-700 bg-white border border-stone-300 rounded-lg hover:border-slate-400 transition-colors cursor-pointer"
-              >
-                <LogOut className="w-3.5 h-3.5" />
-                Esci
-              </button>
-            </>
-          ) : (
-            <button
-              type="button"
-              onClick={onCuratorSignIn}
-              className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold text-[#0D6E6E] bg-teal-50/70 border border-teal-200 rounded-xl hover:bg-teal-100/70 transition-colors cursor-pointer"
-            >
-              <LogIn className="w-3.5 h-3.5" />
-              Accesso Curatore (per pubblicare su Firestore)
-            </button>
-          )}
-        </div>
+        <h2 id="parameter-governance-heading" className="text-lg font-bold text-slate-900">
+          Trasparenza Coefficienti Clinici &amp; Simulazione Aggiornamenti
+        </h2>
+        <p className="text-xs sm:text-sm text-slate-600 max-w-3xl leading-relaxed">
+          Tutti i coefficienti usati nei calcoli sono trasparenti, versionati e dotati di limiti di
+          sicurezza (<em>guardrail</em>). Puoi ispezionare le soglie attive e testare nella
+          sessione locale l’effetto delle proposte scientifiche più recenti, con ripristino
+          immediato alla baseline.
+        </p>
       </div>
 
       {statusBanner && (
@@ -185,7 +122,7 @@ export function ParameterGovernancePanel({
             </div>
             <button
               type="button"
-              disabled={busyAction || guardedAutoPending.length === 0}
+              disabled={guardedAutoPending.length === 0}
               onClick={onRunGuardedAutoUpdates}
               className={`px-3.5 py-2 text-xs font-semibold rounded-xl transition-colors whitespace-nowrap shrink-0 ${
                 guardedAutoPending.length > 0
@@ -261,7 +198,6 @@ export function ParameterGovernancePanel({
                     {prop.status === 'pending' && (
                       <button
                         type="button"
-                        disabled={busyAction}
                         onClick={() => onRejectProposal(prop)}
                         className="text-[11px] font-medium text-slate-500 hover:text-rose-700 cursor-pointer"
                       >
@@ -353,16 +289,14 @@ export function ParameterGovernancePanel({
                       <div className="flex items-center gap-2">
                         <button
                           type="button"
-                          disabled={busyAction}
                           onClick={() => onApproveProposal(prop)}
-                          className="inline-flex items-center gap-1 px-3 py-1.5 text-xs font-semibold text-white bg-[#0D6E6E] rounded-lg hover:bg-[#0A5757] transition-colors cursor-pointer disabled:opacity-60"
+                          className="inline-flex items-center gap-1 px-3 py-1.5 text-xs font-semibold text-white bg-[#0D6E6E] rounded-lg hover:bg-[#0A5757] transition-colors cursor-pointer"
                         >
                           <ShieldCheck className="w-3.5 h-3.5" />
-                          Approva e Pubblica
+                          Simula in Sessione
                         </button>
                         <button
                           type="button"
-                          disabled={busyAction}
                           onClick={() => onRejectProposal(prop)}
                           className="inline-flex items-center gap-1 px-2.5 py-1.5 text-xs font-medium text-slate-700 bg-white border border-stone-300 rounded-lg hover:border-rose-300 hover:text-rose-700 transition-colors cursor-pointer"
                         >
@@ -420,7 +354,6 @@ export function ParameterGovernancePanel({
                 ) : (
                   <button
                     type="button"
-                    disabled={busyAction}
                     onClick={() => onRollbackRevision(rev)}
                     className="inline-flex items-center gap-1 px-3 py-1.5 text-xs font-medium text-slate-700 bg-white border border-stone-300 rounded-lg hover:border-[#0D6E6E] hover:text-[#0D6E6E] transition-colors whitespace-nowrap shrink-0 cursor-pointer"
                   >
@@ -468,13 +401,10 @@ export function ParameterGovernancePanel({
               }
             )}
           </div>
-          {!isCurator && (
-            <p className="text-[11px] text-slate-500 leading-relaxed">
-              Nota: senza accesso curatore puoi comunque simulare e testare i parametri in questa
-              sessione locale; per salvarli in modo permanente su Firebase Firestore per tutti i
-              visitatori, usa «Accesso Curatore».
-            </p>
-          )}
+          <p className="text-[11px] text-slate-500 leading-relaxed">
+            Nota: le modifiche simulate in questa sezione valgono solo per la sessione corrente nel
+            tuo browser; nessun dato viene inviato o salvato su server esterni.
+          </p>
         </div>
       </div>
     </section>

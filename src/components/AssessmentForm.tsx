@@ -2,10 +2,13 @@ import {
   Activity,
   AlertCircle,
   ArrowRight,
+  Calculator,
   FileUp,
   Footprints,
   Info,
   Leaf,
+  Minus,
+  Plus,
   RotateCcw,
   Users,
 } from 'lucide-react';
@@ -28,6 +31,13 @@ import {
   computeEffectiveActivityMetrics,
   EMPTY_CLINICAL_DRAFT,
 } from '../utils/clinicalRiskEngine';
+import {
+  calculatePackYears,
+  calculateWeeklyAlcoholUnits,
+  EMPTY_WEEKLY_DRINKS,
+  formatItalianNumber,
+  type WeeklyAlcoholDrinks,
+} from '../utils/exposureCalculators';
 
 import type { PersonalAnalysisRecord } from '../utils/personalArchiveFile';
 
@@ -97,6 +107,17 @@ export function AssessmentForm({
   const errorAlertRef = useRef<HTMLDivElement | null>(null);
   const archiveInputRef = useRef<HTMLInputElement | null>(null);
   const [lipidsUnknown, setLipidsUnknown] = useState(false);
+
+  // Guided inline helper state for alcohol units/week (everyday drinks -> ISS/CREA UA)
+  const [showAlcoholHelper, setShowAlcoholHelper] = useState(false);
+  const [weeklyDrinks, setWeeklyDrinks] = useState<WeeklyAlcoholDrinks>({
+    ...EMPTY_WEEKLY_DRINKS,
+  });
+  const weeklyDrinksRef = useRef<WeeklyAlcoholDrinks>({ ...EMPTY_WEEKLY_DRINKS });
+
+  // Guided inline helper state for smoking pack-years (cigarettes/day ÷ 20 × years)
+  const [cigsPerDay, setCigsPerDay] = useState<number | null>(null);
+  const [yearsSmoked, setYearsSmoked] = useState<number | null>(null);
 
   const liveBmi = useMemo(() => {
     if (draft.heightCm === null || draft.weightKg === null) return 0;
@@ -203,6 +224,38 @@ export function AssessmentForm({
   const isWorkoutDetailsRequired =
     draft.workoutsPerWeek !== null && draft.workoutsPerWeek > 0;
 
+  const updateWeeklyDrink = (key: keyof WeeklyAlcoholDrinks, deltaOrAbsolute: { delta?: number; value?: number }) => {
+    const current = weeklyDrinksRef.current;
+    const rawNext =
+      deltaOrAbsolute.delta !== undefined
+        ? current[key] + deltaOrAbsolute.delta
+        : (deltaOrAbsolute.value ?? 0);
+    const clamped = Math.max(0, Math.min(50, Math.round(rawNext)));
+    const nextDrinks: WeeklyAlcoholDrinks = { ...current, [key]: clamped };
+    weeklyDrinksRef.current = nextDrinks;
+    setWeeklyDrinks(nextDrinks);
+    updateField('alcoholUnitsPerWeek', calculateWeeklyAlcoholUnits(nextDrinks));
+  };
+
+  const handleSetZeroAlcohol = () => {
+    const empty = { ...EMPTY_WEEKLY_DRINKS };
+    weeklyDrinksRef.current = empty;
+    setWeeklyDrinks(empty);
+    updateField('alcoholUnitsPerWeek', 0);
+  };
+
+  const handlePackYearsHelperChange = (
+    nextCigs: number | null,
+    nextYears: number | null
+  ) => {
+    setCigsPerDay(nextCigs);
+    setYearsSmoked(nextYears);
+    const computed = calculatePackYears(nextCigs, nextYears);
+    if (computed !== null) {
+      updateField('packYears', computed);
+    }
+  };
+
   return (
     <div className="space-y-8">
       {/* Warm Editorial Hero with Illustration */}
@@ -302,6 +355,11 @@ export function AssessmentForm({
               type="button"
               onClick={() => {
                 setLipidsUnknown(false);
+                setShowAlcoholHelper(false);
+                weeklyDrinksRef.current = { ...EMPTY_WEEKLY_DRINKS };
+                setWeeklyDrinks({ ...EMPTY_WEEKLY_DRINKS });
+                setCigsPerDay(null);
+                setYearsSmoked(null);
                 onResetEmpty();
               }}
               aria-label="Svuota tutti i campi"
@@ -861,7 +919,8 @@ export function AssessmentForm({
                   <input
                     id="alcoholUnitsPerWeek"
                     type="number"
-                    placeholder="Es. 0"
+                    step="0.5"
+                    placeholder="Es. 0 oppure usa il calcolatore"
                     value={draft.alcoholUnitsPerWeek ?? ''}
                     onChange={(e) => handleNumberInput('alcoholUnitsPerWeek', e.target.value)}
                     aria-required="true"
@@ -871,16 +930,134 @@ export function AssessmentForm({
                       'font-mono tabular-nums'
                     )}
                   />
-                  {errors.alcoholUnitsPerWeek ? (
+                  {errors.alcoholUnitsPerWeek && (
                     <p className="mt-1 text-xs font-medium text-rose-700">
                       {errors.alcoholUnitsPerWeek}
                     </p>
-                  ) : (
-                    <p className="mt-1 text-xs text-slate-500">
-                      1 unità ≈ 125 ml vino o 330 ml birra
-                    </p>
                   )}
+                  <div className="mt-1.5 flex items-center justify-between gap-2">
+                    <button
+                      type="button"
+                      onClick={handleSetZeroAlcohol}
+                      className="text-xs font-medium text-emerald-700 hover:text-emerald-900 hover:underline whitespace-nowrap cursor-pointer"
+                    >
+                      Non bevo (0)
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setShowAlcoholHelper((open) => !open)}
+                      aria-expanded={showAlcoholHelper}
+                      className="inline-flex items-center gap-1 text-xs font-semibold text-[#0D6E6E] hover:underline whitespace-nowrap cursor-pointer"
+                    >
+                      <Calculator className="w-3.5 h-3.5" />
+                      {showAlcoholHelper ? 'Chiudi calcolatore' : 'Calcola dai bicchieri'}
+                    </button>
+                  </div>
                 </div>
+
+                {/* Guided Weekly Alcohol Units Helper */}
+                {showAlcoholHelper && (
+                  <div
+                    data-testid="alcohol-helper-box"
+                    className="sm:col-span-2 rounded-xl bg-[#FAF9F5] border border-emerald-200/80 p-4 space-y-3"
+                  >
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <div>
+                        <p className="text-xs font-semibold text-slate-900 flex items-center gap-1.5">
+                          <Calculator className="w-3.5 h-3.5 text-emerald-700" />
+                          Calcolatore guidato: quanti bicchieri bevi in una settimana tipo?
+                        </p>
+                        <p className="text-[11px] text-slate-500 mt-0.5">
+                          Conversione automatica secondo standard ISS/CREA (1 unità alcolica = 12 g di alcol).
+                        </p>
+                      </div>
+                      <span className="text-xs font-mono font-bold tabular-nums text-emerald-900 bg-emerald-50 border border-emerald-200 px-2.5 py-1 rounded-md">
+                        Totale: {formatItalianNumber(draft.alcoholUnitsPerWeek ?? 0)} UA/sett
+                      </span>
+                    </div>
+
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                      {(
+                        [
+                          {
+                            key: 'wineGlasses',
+                            label: 'Calici di vino (125 ml)',
+                            weight: '1 UA cad.',
+                          },
+                          {
+                            key: 'smallBeers',
+                            label: 'Birre (330 ml)',
+                            weight: '1 UA cad.',
+                          },
+                          {
+                            key: 'aperitifsCocktails',
+                            label: 'Spritz / Aperitivi / Cocktail',
+                            weight: '1,5 UA cad.',
+                          },
+                          {
+                            key: 'spiritsShots',
+                            label: 'Amari / Superalcolici (40 ml)',
+                            weight: '1 UA cad.',
+                          },
+                        ] as Array<{
+                          key: keyof WeeklyAlcoholDrinks;
+                          label: string;
+                          weight: string;
+                        }>
+                      ).map((drink) => (
+                        <div
+                          key={drink.key}
+                          className="flex items-center justify-between gap-2 bg-white border border-stone-200 rounded-lg px-3 py-2"
+                        >
+                          <div className="min-w-0">
+                            <p className="text-xs font-medium text-slate-800 leading-tight">
+                              {drink.label}
+                            </p>
+                            <p className="text-[11px] font-mono text-slate-500">{drink.weight}</p>
+                          </div>
+                          <div className="flex items-center gap-1 shrink-0">
+                            <button
+                              type="button"
+                              aria-label={`Riduci ${drink.label}`}
+                              onClick={() => updateWeeklyDrink(drink.key, { delta: -1 })}
+                              className="w-7 h-7 inline-flex items-center justify-center rounded-md border border-stone-300 bg-stone-50 text-slate-700 hover:bg-stone-100 cursor-pointer"
+                            >
+                              <Minus className="w-3.5 h-3.5" />
+                            </button>
+                            <input
+                              type="number"
+                              min={0}
+                              max={50}
+                              aria-label={drink.label}
+                              value={weeklyDrinks[drink.key]}
+                              onChange={(e) => {
+                                const parsed = Number(e.target.value);
+                                updateWeeklyDrink(drink.key, {
+                                  value: Number.isFinite(parsed) ? parsed : 0,
+                                });
+                              }}
+                              className="w-12 text-center text-xs font-mono tabular-nums py-1 border border-stone-300 rounded-md bg-white text-slate-900 focus:outline-none focus:ring-2 focus:ring-[#0D6E6E]/20 focus:border-[#0D6E6E]"
+                            />
+                            <button
+                              type="button"
+                              aria-label={`Aumenta ${drink.label}`}
+                              onClick={() => updateWeeklyDrink(drink.key, { delta: 1 })}
+                              className="w-7 h-7 inline-flex items-center justify-center rounded-md border border-teal-200 bg-teal-50 text-[#0D6E6E] hover:bg-teal-100 cursor-pointer"
+                            >
+                              <Plus className="w-3.5 h-3.5" />
+                            </button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+
+                    <p className="text-[11px] text-slate-600">
+                      Il campo <strong>Alcol (unità alcoliche/settimana)</strong> si aggiorna da
+                      solo. Riferimento prudenziale ISS/OMS: ≤7 UA/sett (donne) · ≤14 UA/sett
+                      (uomini); per prevenzione oncologica WCRF/AIRC l’ideale è 0.
+                    </p>
+                  </div>
+                )}
               </div>
             </fieldset>
 
@@ -919,6 +1096,10 @@ export function AssessmentForm({
                     value={draft.smokingStatus}
                     onChange={(e) => {
                       const nextStatus = e.target.value as SmokingStatus | '';
+                      if (nextStatus === 'never' || nextStatus === '') {
+                        setCigsPerDay(null);
+                        setYearsSmoked(null);
+                      }
                       onChange({
                         ...draft,
                         smokingStatus: nextStatus,
@@ -961,7 +1142,8 @@ export function AssessmentForm({
                   <input
                     id="packYears"
                     type="number"
-                    placeholder={isPackYearsRequired ? 'Es. 8' : 'Solo fumatori / ex'}
+                    step="0.5"
+                    placeholder={isPackYearsRequired ? 'Calcolalo qui sotto' : 'Solo fumatori / ex'}
                     disabled={!isPackYearsRequired}
                     value={isPackYearsRequired ? (draft.packYears ?? '') : ''}
                     onChange={(e) => handleNumberInput('packYears', e.target.value)}
@@ -975,9 +1157,109 @@ export function AssessmentForm({
                   {errors.packYears ? (
                     <p className="mt-1 text-xs font-medium text-rose-700">{errors.packYears}</p>
                   ) : (
-                    <p className="mt-1 text-xs text-slate-500">(Pacchetti/die × anni di fumo)</p>
+                    <p className="mt-1 text-xs text-slate-500">
+                      {isPackYearsRequired
+                        ? 'Si compila in automatico usando i 2 campi qui sotto'
+                        : '(Sigarette/giorno ÷ 20) × anni di fumo'}
+                    </p>
                   )}
                 </div>
+
+                {/* Guided Pack-Years Calculator (auto-shown for former/current smokers) */}
+                {isPackYearsRequired && (
+                  <div
+                    data-testid="pack-years-helper-box"
+                    className="sm:col-span-2 rounded-xl bg-[#FAF9F5] border border-orange-200/90 p-4 space-y-3"
+                  >
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <div>
+                        <p className="text-xs font-semibold text-slate-900 flex items-center gap-1.5">
+                          <Calculator className="w-3.5 h-3.5 text-orange-700" />
+                          Calcolatore automatico Pacchetti-anno
+                        </p>
+                        <p className="text-[11px] text-slate-500 mt-0.5">
+                          Inserisci solo quante sigarette fumavi/fumi al giorno e per quanti anni
+                          (1 pacchetto = 20 sigarette).
+                        </p>
+                      </div>
+                      <span className="text-xs font-mono font-bold tabular-nums text-orange-900 bg-orange-50 border border-orange-200 px-2.5 py-1 rounded-md">
+                        {draft.packYears !== null
+                          ? `${formatItalianNumber(draft.packYears)} pacchetti-anno`
+                          : 'In attesa dei 2 dati'}
+                      </span>
+                    </div>
+
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                      <div>
+                        <label
+                          htmlFor="helperCigsPerDay"
+                          className="block text-xs font-medium text-slate-700 mb-1"
+                        >
+                          Sigarette al giorno (in media)
+                        </label>
+                        <input
+                          id="helperCigsPerDay"
+                          type="number"
+                          min={0}
+                          max={100}
+                          placeholder="Es. 10 (mezzo pacchetto)"
+                          value={cigsPerDay ?? ''}
+                          onChange={(e) => {
+                            const raw = e.target.value.trim();
+                            const parsed = raw === '' ? null : Number(raw);
+                            handlePackYearsHelperChange(
+                              parsed !== null && Number.isFinite(parsed) ? parsed : null,
+                              yearsSmoked
+                            );
+                          }}
+                          className="w-full px-3 py-2 text-sm font-mono tabular-nums bg-white border border-stone-300 rounded-lg text-slate-900 focus:outline-none focus:ring-2 focus:ring-[#0D6E6E]/20 focus:border-[#0D6E6E]"
+                        />
+                      </div>
+
+                      <div>
+                        <label
+                          htmlFor="helperYearsSmoked"
+                          className="block text-xs font-medium text-slate-700 mb-1"
+                        >
+                          Per quanti anni hai fumato?
+                        </label>
+                        <input
+                          id="helperYearsSmoked"
+                          type="number"
+                          min={0}
+                          max={80}
+                          step="0.5"
+                          placeholder="Es. 15 anni"
+                          value={yearsSmoked ?? ''}
+                          onChange={(e) => {
+                            const raw = e.target.value.trim();
+                            const parsed = raw === '' ? null : Number(raw);
+                            handlePackYearsHelperChange(
+                              cigsPerDay,
+                              parsed !== null && Number.isFinite(parsed) ? parsed : null
+                            );
+                          }}
+                          className="w-full px-3 py-2 text-sm font-mono tabular-nums bg-white border border-stone-300 rounded-lg text-slate-900 focus:outline-none focus:ring-2 focus:ring-[#0D6E6E]/20 focus:border-[#0D6E6E]"
+                        />
+                      </div>
+                    </div>
+
+                    {cigsPerDay !== null && yearsSmoked !== null ? (
+                      <p className="text-xs font-mono text-slate-700 bg-white border border-stone-200 rounded-lg px-3 py-2">
+                        ({formatItalianNumber(cigsPerDay)} sig./giorno ÷ 20) ×{' '}
+                        {formatItalianNumber(yearsSmoked)} anni ={' '}
+                        <strong className="text-[#0D6E6E]">
+                          {formatItalianNumber(draft.packYears ?? 0)} pacchetti-anno
+                        </strong>
+                      </p>
+                    ) : (
+                      <p className="text-[11px] text-slate-600">
+                        Esempio: 10 sigarette/giorno per 15 anni = 7,5 pacchetti-anno. Soglia
+                        screening polmonare USPSTF/AIOM: ≥20 pacchetti-anno.
+                      </p>
+                    )}
+                  </div>
+                )}
 
                 <div>
                   <label

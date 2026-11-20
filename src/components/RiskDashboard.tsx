@@ -9,7 +9,6 @@ import {
   ShieldCheck,
   SlidersHorizontal,
   Trash2,
-  TrendingDown,
 } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import {
@@ -36,18 +35,25 @@ import type {
   PathologyPopulationComparison,
   RiskTier,
 } from '../types/clinical';
+import type { ClinicalParameterSet } from '../utils/clinicalParameters';
+import {
+  buildPersonalizedInterventionPlan,
+  evaluateHistoricalTrajectory,
+} from '../utils/interventionPlanner';
 import {
   buildLongitudinalSeries,
-  computeLongitudinalDelta,
   createPersonalAnalysisRecord,
   type LongitudinalChartPoint,
   type LongitudinalMetricKey,
   type PersonalAnalysisRecord,
 } from '../utils/personalArchiveFile';
+import { HistoricalEvaluationPanel } from './HistoricalEvaluationPanel';
+import { InterventionPlanSection } from './InterventionPlanSection';
 
 interface RiskDashboardProps {
   profile: ClinicalProfileInput;
   result: ClinicalAssessmentResult;
+  activeParams: ClinicalParameterSet;
   personalTimeline: PersonalAnalysisRecord[];
   importError: string | null;
   onEditParameters: () => void;
@@ -194,6 +200,7 @@ const LONGITUDINAL_METRIC_OPTIONS: Array<{
 export function RiskDashboard({
   profile,
   result,
+  activeParams,
   personalTimeline,
   importError,
   onEditParameters,
@@ -251,13 +258,36 @@ export function RiskDashboard({
     );
   }, [sortedTimeline, selectedCompareId]);
 
-  const longitudinalDelta = useMemo(
+  const historicalEvaluation = useMemo(
     () =>
       selectedBaselineRecord
-        ? computeLongitudinalDelta(selectedBaselineRecord, currentRecord)
+        ? evaluateHistoricalTrajectory(
+            sortedTimeline,
+            currentRecord,
+            selectedBaselineRecord,
+            activeParams
+          )
         : null,
-    [selectedBaselineRecord, currentRecord]
+    [sortedTimeline, currentRecord, selectedBaselineRecord, activeParams]
   );
+
+  const interventionPlan = useMemo(
+    () =>
+      buildPersonalizedInterventionPlan(
+        profile,
+        result,
+        activeParams,
+        historicalEvaluation
+      ),
+    [profile, result, activeParams, historicalEvaluation]
+  );
+
+  const handleScrollToPlan = () => {
+    const el = document.getElementById('piano-intervento');
+    if (el) {
+      el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+  };
 
   const longitudinalChartData = useMemo(
     () => buildLongitudinalSeries(sortedTimeline, currentRecord, includeCurrentInTimeline),
@@ -344,135 +374,16 @@ export function RiskDashboard({
         </div>
       </section>
 
-      {/* Longitudinal Delta Summary Strip (appears whenever a user uploaded a previous .json file) */}
-      {longitudinalDelta && (
-        <section
-          aria-labelledby="longitudinal-heading"
-          className="bg-white border border-emerald-200 rounded-2xl p-6 space-y-5 shadow-sm"
-        >
-          <div className="flex flex-col lg:flex-row lg:items-end justify-between gap-4 border-b border-stone-100 pb-4">
-            <div className="space-y-1">
-              <p className="inline-flex items-center gap-1.5 text-xs font-mono font-semibold text-emerald-700">
-                <TrendingDown className="w-4 h-4" />
-                CONFRONTO NEL TEMPO · FILE PERSONALE CARICATO ({sortedTimeline.length}{' '}
-                {sortedTimeline.length === 1 ? 'rilevazione storica' : 'rilevazioni storiche'})
-              </p>
-              <h2 id="longitudinal-heading" className="text-lg font-bold text-slate-900">
-                Come cambia il tuo profilo rispetto al{' '}
-                {new Date(longitudinalDelta.previousRecord.recordedAtIso).toLocaleDateString('it-IT', {
-                  day: '2-digit',
-                  month: 'long',
-                  year: 'numeric',
-                })}
-              </h2>
-              <p className="text-xs text-slate-600">
-                Confronto tra la rilevazione selezionata dal tuo file locale e il calcolo attuale.
-                Esplora il grafico a linee completo qui sotto o scarica il file storico aggiornato.
-              </p>
-            </div>
-
-            <div className="flex flex-wrap items-center gap-2.5 shrink-0">
-              {sortedTimeline.length > 1 && (
-                <div className="flex items-center gap-2">
-                  <label
-                    htmlFor="baselineCompareSelect"
-                    className="text-xs font-medium text-slate-600 whitespace-nowrap"
-                  >
-                    Confronta con:
-                  </label>
-                  <select
-                    id="baselineCompareSelect"
-                    value={selectedBaselineRecord?.id ?? ''}
-                    onChange={(e) => setSelectedCompareId(e.target.value)}
-                    className="px-2.5 py-2 text-xs font-medium bg-[#FAF9F5] border border-stone-300 rounded-lg text-slate-800 focus:outline-none focus:ring-2 focus:ring-[#0D6E6E]/20 focus:border-[#0D6E6E] cursor-pointer"
-                  >
-                    {sortedTimeline.map((rec) => {
-                      const d = new Date(rec.recordedAtIso).toLocaleDateString('it-IT', {
-                        day: '2-digit',
-                        month: 'short',
-                        year: 'numeric',
-                      });
-                      return (
-                        <option key={rec.id} value={rec.id}>
-                          {d} — {rec.label}
-                        </option>
-                      );
-                    })}
-                  </select>
-                </div>
-              )}
-
-              <button
-                type="button"
-                onClick={handleExport}
-                className="inline-flex items-center gap-1.5 px-4 py-2 text-xs font-semibold text-white bg-emerald-700 rounded-lg hover:bg-emerald-800 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
-              >
-                <Download className="w-3.5 h-3.5" />
-                Scarica File Storico Aggiornato (.json)
-              </button>
-            </div>
-          </div>
-
-          <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-            {[
-              {
-                label: 'Cardiovascolare (10 anni)',
-                prev: `${longitudinalDelta.previousRecord.summary.cvdPct}%`,
-                curr: `${longitudinalDelta.currentRecord.summary.cvdPct}%`,
-                delta: longitudinalDelta.cvdDeltaPct,
-                unit: '%',
-              },
-              {
-                label: 'Diabete Tipo 2 (FINDRISC)',
-                prev: `${longitudinalDelta.previousRecord.summary.findriscPoints} pt`,
-                curr: `${longitudinalDelta.currentRecord.summary.findriscPoints} pt`,
-                delta: longitudinalDelta.findriscDeltaPoints,
-                unit: ' pt',
-              },
-              {
-                label: 'Indice Oncologico',
-                prev: `${longitudinalDelta.previousRecord.summary.oncologicIndex}/100`,
-                curr: `${longitudinalDelta.currentRecord.summary.oncologicIndex}/100`,
-                delta: longitudinalDelta.oncologicDeltaIndex,
-                unit: ' pt',
-              },
-              {
-                label: 'Indice Massa Corporea (BMI)',
-                prev: `${longitudinalDelta.previousRecord.summary.bmi}`,
-                curr: `${longitudinalDelta.currentRecord.summary.bmi}`,
-                delta: longitudinalDelta.bmiDelta,
-                unit: '',
-              },
-            ].map((item) => {
-              const improved = item.delta < 0;
-              const unchanged = item.delta === 0;
-              return (
-                <div
-                  key={item.label}
-                  className="rounded-xl bg-[#FAF9F5] border border-stone-200 p-4 space-y-1.5"
-                >
-                  <p className="text-[11px] font-medium text-slate-600">{item.label}</p>
-                  <p className="text-sm font-mono font-semibold text-slate-900 tabular-nums">
-                    {item.prev} → {item.curr}
-                  </p>
-                  <span
-                    className={`inline-block text-xs font-mono font-bold tabular-nums ${
-                      improved
-                        ? 'text-emerald-700'
-                        : unchanged
-                          ? 'text-slate-500'
-                          : 'text-rose-700'
-                    }`}
-                  >
-                    {item.delta > 0 ? `+${item.delta}` : item.delta}
-                    {item.unit}{' '}
-                    {improved ? '(Migliorato)' : unchanged ? '(Stabile)' : '(In aumento)'}
-                  </span>
-                </div>
-              );
-            })}
-          </div>
-        </section>
+      {/* Historical Trajectory Evaluation (appears whenever a user uploaded a previous .json file) */}
+      {historicalEvaluation && selectedBaselineRecord && (
+        <HistoricalEvaluationPanel
+          evaluation={historicalEvaluation}
+          sortedTimeline={sortedTimeline}
+          selectedBaselineId={selectedBaselineRecord.id}
+          onSelectBaseline={setSelectedCompareId}
+          onExportArchive={handleExport}
+          onScrollToPlan={handleScrollToPlan}
+        />
       )}
 
       {/* 3 Primary Clinical Scorecards */}
@@ -502,6 +413,16 @@ export function RiskDashboard({
           topBorderClass="border-t-teal-500"
         />
       </section>
+
+      {/* Personalized "Where & How to Intervene" Plan + Live Combined Risk Simulator */}
+      <InterventionPlanSection
+        profile={profile}
+        result={result}
+        plan={interventionPlan}
+        activeParams={activeParams}
+        hasHistoryLoaded={Boolean(historicalEvaluation)}
+        onEditParameters={onEditParameters}
+      />
 
       {/* Unified Comparative & Longitudinal Analytics Section (Bar / Radar / Temporal LineChart) */}
       {populationComparison.length > 0 && (

@@ -258,9 +258,8 @@ export function HomePage({
               </h3>
               <p className="text-sm text-slate-600 leading-relaxed">
                 L’osservatorio scientifico integra pubblicazioni accademiche verificate e una
-                tabella parametri versionata su database: i fattori modificabili possono aggiornarsi
-                entro limiti di sicurezza (<em>guardrail</em>), mentre i protocolli clinici primari
-                richiedono sempre revisione umana.
+                tabella parametri versionata con limiti di sicurezza (<em>guardrail</em>), mentre i
+                protocolli clinici primari restano ancorati alle linee guida validate.
               </p>
             </div>
             <div className="pt-4">
@@ -292,9 +291,8 @@ export function HomePage({
             <strong className="text-slate-900">
               non salva mai i tuoi dati biometrici o le tue risposte sui nostri server
             </strong>
-            . Tutti i calcoli avvengono localmente nel tuo browser; sul database del sito vengono
-            conservati esclusivamente i dati scientifici pubblici (pubblicazioni e parametri di
-            riferimento).
+            . Tutti i calcoli avvengono localmente nel tuo browser, senza alcun database remoto
+            né salvataggio di dati personali sul sito.
           </p>
         </div>
 
