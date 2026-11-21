@@ -16,8 +16,6 @@ import {
   BarChart,
   CartesianGrid,
   Legend,
-  Line,
-  LineChart,
   PolarAngleAxis,
   PolarGrid,
   PolarRadiusAxis,
@@ -46,13 +44,9 @@ import {
 import {
   buildPersonalizedInterventionPlan,
   evaluateHistoricalTrajectory,
-  type FactorKey,
 } from '../utils/interventionPlanner';
 import {
-  buildLongitudinalSeries,
   createPersonalAnalysisRecord,
-  type LongitudinalChartPoint,
-  type LongitudinalMetricKey,
   type PersonalAnalysisRecord,
 } from '../utils/personalArchiveFile';
 import {
@@ -62,6 +56,8 @@ import {
 } from './HealthAdviceAlert';
 import { HistoricalEvaluationPanel } from './HistoricalEvaluationPanel';
 import { InterventionPlanSection } from './InterventionPlanSection';
+import { RiskTimelineChart } from './RiskTimelineChart';
+import { SpecificCancerRiskSection } from './SpecificCancerRiskSection';
 
 export type { AdviceSeverity, PersonalizedAdviceItem };
 
@@ -95,6 +91,27 @@ export function getPersonalizedAdvice(
   const totalChol = normalizeOptionalLipid(computedProfile.totalCholesterolMgDl);
   const hdlChol = normalizeOptionalLipid(computedProfile.hdlCholesterolMgDl);
   const nonHdl = totalChol !== null && hdlChol !== null ? Math.round(totalChol - hdlChol) : null;
+
+  // 0. Segnale d'allarme clinico gastrointestinale (Red Flag NICE NG12 / AIOM)
+  if (computedProfile.persistentBowelChangeOrBleeding) {
+    advice.push({
+      id: 'advice_bowel_red_flag',
+      factorKey: 'clinical_evaluation',
+      iconCategory: 'gastrointestinal',
+      severity: 'urgent',
+      severityLabel: 'Valutazione medica prioritaria',
+      title: 'Variazione persistente dell’alvo o sanguinamento riferito (Red Flag clinico)',
+      triggerMetric: 'Segnale d’allarme gastrointestinale attivo (non altera lo score statistico)',
+      suggestedActions: [
+        'Prenotare una valutazione diretta con il Medico di Medicina Generale (MMG)',
+        'Valutare con il medico ricerca sangue occulto fecale (SOF/FIT) o approfondimento gastroenterologico/endoscopico',
+      ],
+      actionSummary:
+        'A differenza della stipsi cronica abituale (che secondo WCRF/AICR non aumenta il rischio statistico di tumore del colon-retto), una variazione recente e persistente delle abitudini intestinali (>4–6 settimane) o la presenza di sangue nelle feci richiede sempre inquadramento medico diretto.',
+      guideline: 'NICE Guideline NG12 · Linee Guida AIOM Colon-Retto · WCRF/AICR',
+      domains: 'Gastroenterologia · Oncologia Preventiva',
+    });
+  }
 
   // 1. Cessazione fumo di tabacco
   if (
@@ -406,6 +423,8 @@ function DomainScoreCard({
   icon,
   accentClass,
   topBorderClass,
+  actionLabel,
+  onActionClick,
 }: {
   eyebrow: string;
   title: string;
@@ -413,6 +432,8 @@ function DomainScoreCard({
   icon: ReactNode;
   accentClass: string;
   topBorderClass: string;
+  actionLabel?: string;
+  onActionClick?: () => void;
 }) {
   const tierStyle = getTierPresentation(domain.tier);
 
@@ -457,66 +478,27 @@ function DomainScoreCard({
         <p className="text-sm text-slate-600 leading-relaxed">{domain.summary}</p>
       </div>
 
-      <div className="pt-3 border-t border-stone-100 space-y-1 text-xs text-slate-500">
+      <div className="pt-3 border-t border-stone-100 space-y-1.5 text-xs text-slate-500">
         <p className="font-medium text-slate-700">{domain.protocolName}</p>
         <p className="font-mono text-[11px] text-slate-500">{domain.protocolReference}</p>
         {domain.assumptionsUsed.length > 0 && (
-          <p className="text-[11px] text-slate-500 pt-1">{domain.assumptionsUsed[0]}</p>
+          <p className="text-[11px] text-slate-500 pt-0.5">{domain.assumptionsUsed[0]}</p>
+        )}
+        {actionLabel && onActionClick && (
+          <div className="pt-1.5">
+            <button
+              type="button"
+              onClick={onActionClick}
+              className="inline-flex items-center gap-1 text-xs font-semibold text-[#0D6E6E] hover:underline cursor-pointer"
+            >
+              {actionLabel}
+            </button>
+          </div>
         )}
       </div>
     </article>
   );
 }
-
-const LONGITUDINAL_METRIC_OPTIONS: Array<{
-  key: LongitudinalMetricKey;
-  label: string;
-  shortLabel: string;
-  unit: string;
-  color: string;
-  domain?: [number, number | 'auto'];
-}> = [
-  {
-    key: 'all_normalized',
-    label: 'Tutti i rischi (0–100)',
-    shortLabel: 'Tutti (0–100)',
-    unit: '/100',
-    color: '#0D6E6E',
-    domain: [0, 100],
-  },
-  {
-    key: 'cvdPct',
-    label: 'Cardiovascolare 10 anni (%)',
-    shortLabel: 'Cardio (%)',
-    unit: '%',
-    color: '#E11D48',
-    domain: [0, 'auto'],
-  },
-  {
-    key: 'findriscPoints',
-    label: 'Diabete FINDRISC (0–26 pt)',
-    shortLabel: 'Diabete (pt)',
-    unit: ' pt',
-    color: '#F97316',
-    domain: [0, 26],
-  },
-  {
-    key: 'oncologicIndex',
-    label: 'Indice Oncologico (/100)',
-    shortLabel: 'Oncologico (/100)',
-    unit: '/100',
-    color: '#0D6E6E',
-    domain: [0, 100],
-  },
-  {
-    key: 'bmi',
-    label: 'Indice Massa Corporea (BMI)',
-    shortLabel: 'BMI',
-    unit: ' kg/m²',
-    color: '#0284C7',
-    domain: [15, 'auto'],
-  },
-];
 
 export function RiskDashboard({
   profile,
@@ -536,9 +518,6 @@ export function RiskDashboard({
   const [comparisonChartType, setComparisonChartType] = useState<'bar' | 'radar' | 'timeline'>(
     () => (personalTimeline.length > 0 ? 'timeline' : 'bar')
   );
-  const [selectedTimelineMetric, setSelectedTimelineMetric] =
-    useState<LongitudinalMetricKey>('all_normalized');
-  const [includeCurrentInTimeline, setIncludeCurrentInTimeline] = useState(true);
   const [selectedCompareId, setSelectedCompareId] = useState<string>('');
   const dashboardFileInputRef = useRef<HTMLInputElement | null>(null);
   const populationComparison = result.populationComparison ?? [];
@@ -551,25 +530,31 @@ export function RiskDashboard({
     [personalTimeline]
   );
 
-  // Auto-select timeline view & latest historical checkpoint when a file is newly loaded
-  useEffect(() => {
-    if (sortedTimeline.length > 0) {
-      setComparisonChartType('timeline');
-      setSelectedCompareId((prev) =>
-        sortedTimeline.some((r) => r.id === prev)
-          ? prev
-          : sortedTimeline[sortedTimeline.length - 1].id
-      );
-    } else {
-      setSelectedCompareId('');
-      setComparisonChartType((prev) => (prev === 'timeline' ? 'bar' : prev));
-    }
-  }, [sortedTimeline]);
-
   const currentRecord = useMemo(
     () => createPersonalAnalysisRecord(profile, result, 'Analisi attuale'),
     [profile, result]
   );
+
+  // Auto-select timeline view & best historical baseline checkpoint when a file is loaded
+  useEffect(() => {
+    if (sortedTimeline.length > 0) {
+      setComparisonChartType('timeline');
+      setSelectedCompareId((prev) => {
+        if (sortedTimeline.some((r) => r.id === prev)) return prev;
+        const latest = sortedTimeline[sortedTimeline.length - 1];
+        const latestMatchesCurrent =
+          sortedTimeline.length > 1 &&
+          latest.summary.cvdPct === currentRecord.summary.cvdPct &&
+          latest.summary.findriscPoints === currentRecord.summary.findriscPoints &&
+          latest.summary.oncologicIndex === currentRecord.summary.oncologicIndex &&
+          latest.summary.bmi === currentRecord.summary.bmi;
+        return latestMatchesCurrent ? sortedTimeline[0].id : latest.id;
+      });
+    } else {
+      setSelectedCompareId('');
+      setComparisonChartType((prev) => (prev === 'timeline' ? 'bar' : prev));
+    }
+  }, [sortedTimeline, currentRecord]);
 
   const selectedBaselineRecord = useMemo(() => {
     if (sortedTimeline.length === 0) return null;
@@ -615,7 +600,23 @@ export function RiskDashboard({
     }
   };
 
+  const handleScrollToSpecificCancers = () => {
+    const el = document.getElementById('profilo-oncologico-sedi');
+    if (el) {
+      el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+  };
+
   const handleJumpToFactor = (factorKey: PersonalizedAdviceItem['factorKey']) => {
+    if (factorKey === 'clinical_evaluation') {
+      const target =
+        document.querySelector('[data-testid="specific-cancer-card-colorectal"]') ||
+        document.getElementById('profilo-oncologico-sedi');
+      if (target) {
+        target.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      }
+      return;
+    }
     const target =
       document.querySelector(`[data-testid="intervention-item-${factorKey}"]`) ||
       document.getElementById('piano-intervento');
@@ -623,15 +624,6 @@ export function RiskDashboard({
       target.scrollIntoView({ behavior: 'smooth', block: 'center' });
     }
   };
-
-  const longitudinalChartData = useMemo(
-    () => buildLongitudinalSeries(sortedTimeline, currentRecord, includeCurrentInTimeline),
-    [sortedTimeline, currentRecord, includeCurrentInTimeline]
-  );
-
-  const activeMetricConfig =
-    LONGITUDINAL_METRIC_OPTIONS.find((m) => m.key === selectedTimelineMetric) ??
-    LONGITUDINAL_METRIC_OPTIONS[0];
 
   const handleExport = () => {
     const clean =
@@ -746,6 +738,8 @@ export function RiskDashboard({
           icon={<ShieldCheck className="w-4 h-4" />}
           accentClass="bg-teal-50 text-teal-700"
           topBorderClass="border-t-teal-500"
+          actionLabel={`Esplora rischio per sede oncologica (${result.specificCancers?.length ?? 5} sedi) ↓`}
+          onActionClick={handleScrollToSpecificCancers}
         />
       </section>
 
@@ -754,6 +748,17 @@ export function RiskDashboard({
         items={personalizedAdvice}
         onJumpToFactor={handleJumpToFactor}
       />
+
+      {/* Organ-Specific Preventive Oncology Exposure & SSN Screening Section */}
+      {result.specificCancers && result.specificCancers.length > 0 && (
+        <SpecificCancerRiskSection
+          sites={result.specificCancers}
+          sex={profile.sex}
+          age={profile.age}
+          hasBowelRedFlag={Boolean(profile.persistentBowelChangeOrBleeding)}
+          onJumpToFactor={handleJumpToFactor}
+        />
+      )}
 
       {/* Personalized "Where & How to Intervene" Plan + Live Combined Risk Simulator */}
       <InterventionPlanSection
@@ -845,235 +850,14 @@ export function RiskDashboard({
           </div>
 
           {comparisonChartType === 'timeline' ? (
-            sortedTimeline.length === 0 ? (
-              <div className="rounded-xl bg-[#FAF9F5] border border-dashed border-stone-300 p-8 text-center space-y-3">
-                <CalendarClock className="w-8 h-8 text-[#0D6E6E] mx-auto" />
-                <div className="space-y-1 max-w-lg mx-auto">
-                  <h3 className="text-sm font-semibold text-slate-900">
-                    Nessun file storico caricato in questa sessione
-                  </h3>
-                  <p className="text-xs text-slate-600 leading-relaxed">
-                    Per visualizzare il grafico a linee dell’andamento temporale del rischio, carica
-                    un tuo file analisi precedente (<code>.json</code>). Tutti i dati restano solo
-                    sul tuo dispositivo e non vengono mai salvati sul sito.
-                  </p>
-                </div>
-                <div className="flex flex-wrap items-center justify-center gap-2.5 pt-1">
-                  <button
-                    type="button"
-                    onClick={() => dashboardFileInputRef.current?.click()}
-                    className="inline-flex items-center gap-2 px-4 py-2 text-xs font-semibold text-white bg-[#0D6E6E] rounded-lg hover:bg-[#0A5656] transition-colors cursor-pointer"
-                  >
-                    <FileUp className="w-3.5 h-3.5" />
-                    Carica File Storico (.json)
-                  </button>
-                  <button
-                    type="button"
-                    onClick={handleExport}
-                    className="inline-flex items-center gap-2 px-4 py-2 text-xs font-semibold text-[#0D6E6E] bg-white border border-teal-200 rounded-lg hover:bg-teal-50/70 transition-colors cursor-pointer"
-                  >
-                    <Download className="w-3.5 h-3.5" />
-                    Salva l’Analisi di Oggi come Punto di Partenza
-                  </button>
-                </div>
-              </div>
-            ) : (
-              <div className="space-y-5">
-                {/* Metric Selector & Current Analysis Toggle */}
-                <div className="flex flex-col md:flex-row md:items-center justify-between gap-3 bg-[#FAF9F5] border border-stone-200/80 rounded-xl p-3">
-                  <div
-                    role="group"
-                    aria-label="Selettore indicatore grafico temporale"
-                    className="flex flex-wrap items-center gap-1.5"
-                  >
-                    {LONGITUDINAL_METRIC_OPTIONS.map((opt) => (
-                      <button
-                        key={opt.key}
-                        type="button"
-                        onClick={() => setSelectedTimelineMetric(opt.key)}
-                        aria-pressed={selectedTimelineMetric === opt.key}
-                        className={`px-3 py-1.5 text-xs font-medium rounded-lg transition-colors whitespace-nowrap cursor-pointer ${
-                          selectedTimelineMetric === opt.key
-                            ? 'bg-white text-[#0D6E6E] font-semibold border border-teal-200 shadow-xs'
-                            : 'text-slate-600 hover:text-slate-900 hover:bg-white/60 border border-transparent'
-                        }`}
-                      >
-                        {opt.shortLabel}
-                      </button>
-                    ))}
-                  </div>
-
-                  <label className="inline-flex items-center gap-2 text-xs text-slate-700 cursor-pointer select-none shrink-0 px-1">
-                    <input
-                      type="checkbox"
-                      checked={includeCurrentInTimeline}
-                      onChange={(e) => setIncludeCurrentInTimeline(e.target.checked)}
-                      className="rounded border-stone-300 text-[#0D6E6E] focus:ring-[#0D6E6E]"
-                    />
-                    Includi analisi attuale (“Oggi”)
-                  </label>
-                </div>
-
-                <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
-                  {/* Recharts LineChart */}
-                  <div
-                    className="lg:col-span-8 w-full h-72"
-                    data-testid="longitudinal-line-chart"
-                  >
-                    <ResponsiveContainer width="100%" height="100%">
-                      <LineChart
-                        data={longitudinalChartData}
-                        margin={{ top: 10, right: 20, left: -6, bottom: 4 }}
-                      >
-                        <CartesianGrid strokeDasharray="3 3" stroke="#E7E5E4" />
-                        <XAxis
-                          dataKey="dateLabel"
-                          tick={{ fontSize: 11, fill: '#475569' }}
-                          axisLine={{ stroke: '#CBD5E1' }}
-                          tickLine={false}
-                        />
-                        <YAxis
-                          domain={activeMetricConfig.domain}
-                          tick={{ fontSize: 11, fill: '#64748B' }}
-                          axisLine={false}
-                          tickLine={false}
-                        />
-                        <Tooltip
-                          content={({ active, payload }) => {
-                            if (!active || !payload || payload.length === 0) return null;
-                            const pt = payload[0]?.payload as LongitudinalChartPoint | undefined;
-                            if (!pt) return null;
-                            return (
-                              <div className="bg-white border border-stone-200 rounded-lg p-3 shadow-sm text-xs space-y-1.5 max-w-xs">
-                                <p className="font-semibold text-slate-900">
-                                  {pt.label} {pt.isCurrent ? '(Attuale)' : ''}
-                                </p>
-                                <p className="text-[11px] font-mono text-slate-500">
-                                  {pt.fullDate}
-                                </p>
-                                <div className="pt-1 border-t border-stone-100 space-y-1 font-mono tabular-nums">
-                                  <div className="flex justify-between gap-4">
-                                    <span className="text-rose-700">Cardiovascolare:</span>
-                                    <span className="font-semibold text-slate-900">
-                                      {pt.cvdPct}%
-                                    </span>
-                                  </div>
-                                  <div className="flex justify-between gap-4">
-                                    <span className="text-orange-700">Diabete FINDRISC:</span>
-                                    <span className="font-semibold text-slate-900">
-                                      {pt.findriscPoints} / 26 pt
-                                    </span>
-                                  </div>
-                                  <div className="flex justify-between gap-4">
-                                    <span className="text-[#0D6E6E]">Indice Oncologico:</span>
-                                    <span className="font-semibold text-slate-900">
-                                      {pt.oncologicIndex} / 100
-                                    </span>
-                                  </div>
-                                  <div className="flex justify-between gap-4">
-                                    <span className="text-sky-700">BMI:</span>
-                                    <span className="font-semibold text-slate-900">
-                                      {pt.bmi} kg/m²
-                                    </span>
-                                  </div>
-                                </div>
-                              </div>
-                            );
-                          }}
-                        />
-                        <Legend wrapperStyle={{ fontSize: '12px', paddingTop: '8px' }} />
-
-                        {selectedTimelineMetric === 'all_normalized' ? (
-                          <>
-                            <Line
-                              type="monotone"
-                              dataKey="oncologicNormalized"
-                              name="Oncologico (0–100)"
-                              stroke="#0D6E6E"
-                              strokeWidth={2.5}
-                              dot={{ r: 4, strokeWidth: 2 }}
-                              activeDot={{ r: 6 }}
-                            />
-                            <Line
-                              type="monotone"
-                              dataKey="findriscNormalized"
-                              name="Diabete FINDRISC (norm. 0–100)"
-                              stroke="#F97316"
-                              strokeWidth={2.5}
-                              dot={{ r: 4, strokeWidth: 2 }}
-                              activeDot={{ r: 6 }}
-                            />
-                            <Line
-                              type="monotone"
-                              dataKey="cvdNormalized"
-                              name="Cardiovascolare (norm. 0–100)"
-                              stroke="#E11D48"
-                              strokeWidth={2.5}
-                              dot={{ r: 4, strokeWidth: 2 }}
-                              activeDot={{ r: 6 }}
-                            />
-                          </>
-                        ) : (
-                          <Line
-                            type="monotone"
-                            dataKey={selectedTimelineMetric}
-                            name={activeMetricConfig.label}
-                            stroke={activeMetricConfig.color}
-                            strokeWidth={2.75}
-                            dot={{ r: 5, strokeWidth: 2 }}
-                            activeDot={{ r: 7 }}
-                          />
-                        )}
-                      </LineChart>
-                    </ResponsiveContainer>
-                  </div>
-
-                  {/* Historical Records Checkpoints List */}
-                  <div className="lg:col-span-4 border border-stone-200 rounded-xl bg-[#FAF9F5]/80 divide-y divide-stone-200 max-h-72 overflow-y-auto">
-                    <div className="px-4 py-2.5 bg-stone-100/70">
-                      <p className="text-[11px] font-mono font-semibold text-slate-600 uppercase">
-                        Record storici nel file ({sortedTimeline.length})
-                      </p>
-                    </div>
-                    {sortedTimeline.map((rec) => {
-                      const isSelected = selectedBaselineRecord?.id === rec.id;
-                      return (
-                        <button
-                          key={rec.id}
-                          type="button"
-                          onClick={() => setSelectedCompareId(rec.id)}
-                          className={`w-full text-left px-4 py-3 space-y-1 transition-colors cursor-pointer ${
-                            isSelected ? 'bg-teal-50/70' : 'hover:bg-white'
-                          }`}
-                        >
-                          <div className="flex items-center justify-between gap-2">
-                            <span className="text-xs font-semibold text-slate-900 truncate">
-                              {rec.label}
-                            </span>
-                            {isSelected && (
-                              <span className="text-[10px] font-mono font-semibold text-[#0D6E6E] bg-teal-100 px-1.5 py-0.5 rounded shrink-0">
-                                In confronto
-                              </span>
-                            )}
-                          </div>
-                          <p className="text-[11px] font-mono text-slate-500">
-                            {new Date(rec.recordedAtIso).toLocaleDateString('it-IT', {
-                              day: '2-digit',
-                              month: 'short',
-                              year: 'numeric',
-                            })}
-                          </p>
-                          <p className="text-[11px] font-mono text-slate-700 tabular-nums">
-                            CV {rec.summary.cvdPct}% · Diab {rec.summary.findriscPoints}pt · Onco{' '}
-                            {rec.summary.oncologicIndex} · BMI {rec.summary.bmi}
-                          </p>
-                        </button>
-                      );
-                    })}
-                  </div>
-                </div>
-              </div>
-            )
+            <RiskTimelineChart
+              personalTimeline={personalTimeline}
+              currentRecord={currentRecord}
+              selectedCompareId={selectedCompareId}
+              onSelectCompareId={setSelectedCompareId}
+              onUploadFileClick={() => dashboardFileInputRef.current?.click()}
+              onExportCurrentClick={handleExport}
+            />
           ) : (
             <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-center">
               <div

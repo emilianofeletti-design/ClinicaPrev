@@ -209,3 +209,48 @@ test('getPersonalizedAdvice in RiskDashboard generates guideline-based suggestio
   assert.equal(optimalAdvice[0].iconCategory, 'protective');
 });
 
+test('evaluateClinicalRisk computes organ-specific cancer exposure profiles adapted by sex and risk factors', () => {
+  const maleHigh = CLINICAL_PRESETS.find((p) => p.id === 'high_cardiometabolic')!.profile;
+  const maleRes = evaluateClinicalRisk(maleHigh);
+  assert.equal(maleRes.specificCancers.length, 5);
+  assert.ok(maleRes.specificCancers.some((s) => s.id === 'prostate'));
+  assert.ok(!maleRes.specificCancers.some((s) => s.id === 'breast'));
+
+  const lungMale = maleRes.specificCancers.find((s) => s.id === 'lung')!;
+  assert.equal(lungMale.tier, 'high');
+  assert.ok(/LDCT|TC torace a basso dosaggio/i.test(lungMale.screeningGuideline));
+
+  const colorectalMale = maleRes.specificCancers.find((s) => s.id === 'colorectal')!;
+  assert.ok(colorectalMale.exposureScore >= 60);
+  assert.ok(colorectalMale.activeDrivers.some((d) => /Carni rosse/i.test(d)));
+
+  const femaleProt = CLINICAL_PRESETS.find((p) => p.id === 'protective')!.profile;
+  const femaleRes = evaluateClinicalRisk(femaleProt);
+  assert.equal(femaleRes.specificCancers.length, 5);
+  assert.ok(femaleRes.specificCancers.some((s) => s.id === 'breast'));
+  assert.ok(!femaleRes.specificCancers.some((s) => s.id === 'prostate'));
+  assert.ok(femaleRes.specificCancers.every((s) => s.tier === 'low'));
+});
+
+test('persistentBowelChangeOrBleeding triggers urgent gastrointestinal HealthAdviceAlert without distorting statistical risk scores', async () => {
+  const { getPersonalizedAdvice } = await import('../components/RiskDashboard');
+  const protective = CLINICAL_PRESETS.find((p) => p.id === 'protective')!.profile;
+  const withRedFlag = { ...protective, persistentBowelChangeOrBleeding: true };
+
+  const baseRes = evaluateClinicalRisk(protective);
+  const flagRes = evaluateClinicalRisk(withRedFlag);
+
+  assert.equal(flagRes.cardiovascular.scoreNumeric, baseRes.cardiovascular.scoreNumeric);
+  assert.equal(flagRes.metabolic.scoreNumeric, baseRes.metabolic.scoreNumeric);
+  assert.equal(flagRes.oncologic.scoreNumeric, baseRes.oncologic.scoreNumeric);
+
+  const advice = getPersonalizedAdvice(withRedFlag, flagRes);
+  assert.equal(advice[0].id, 'advice_bowel_red_flag');
+  assert.equal(advice[0].iconCategory, 'gastrointestinal');
+  assert.equal(advice[0].severity, 'urgent');
+  assert.ok(/NICE|AIOM/i.test(advice[0].guideline));
+
+  const crc = flagRes.specificCancers.find((s) => s.id === 'colorectal')!;
+  assert.equal(crc.screeningHighlight, true);
+  assert.ok(/Red Flag NICE NG12/i.test(crc.screeningGuideline));
+});

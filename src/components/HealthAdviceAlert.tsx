@@ -9,6 +9,7 @@ import {
   Moon,
   Scale,
   ShieldCheck,
+  Stethoscope,
   WineOff,
 } from 'lucide-react';
 import { useMemo, useState, type ReactNode } from 'react';
@@ -17,6 +18,7 @@ import type { FactorKey } from '../utils/interventionPlanner';
 export type AdviceSeverity = 'urgent' | 'warning' | 'info' | 'positive';
 
 export type AdviceIconCategory =
+  | 'gastrointestinal'
   | 'hypertension'
   | 'smoking'
   | 'activity'
@@ -30,7 +32,7 @@ export type AdviceIconCategory =
 
 export interface PersonalizedAdviceItem {
   id: string;
-  factorKey: FactorKey | 'maintenance';
+  factorKey: FactorKey | 'maintenance' | 'clinical_evaluation';
   iconCategory: AdviceIconCategory;
   severity: AdviceSeverity;
   severityLabel: string;
@@ -52,6 +54,11 @@ function renderColoredCategoryIcon(category: AdviceIconCategory): {
   wellClass: string;
 } {
   switch (category) {
+    case 'gastrointestinal':
+      return {
+        icon: <Stethoscope className="w-4 h-4 text-rose-700" aria-hidden="true" />,
+        wellClass: 'bg-rose-100/85 border-rose-200',
+      };
     case 'hypertension':
       return {
         icon: <HeartPulse className="w-4 h-4 text-rose-600" aria-hidden="true" />,
@@ -191,7 +198,9 @@ export function HealthAdviceAlert({ item, onJumpToFactor }: HealthAdviceAlertPro
               onClick={() => onJumpToFactor(item.factorKey)}
               className="inline-flex items-center gap-1 text-xs font-semibold text-[#0D6E6E] hover:underline whitespace-nowrap cursor-pointer"
             >
-              Vedi nel piano
+              {item.factorKey === 'clinical_evaluation'
+                ? 'Vedi dettaglio Colon-Retto'
+                : 'Vedi nel piano'}
               <ArrowDownRight className="w-3.5 h-3.5" aria-hidden="true" />
             </button>
           )}

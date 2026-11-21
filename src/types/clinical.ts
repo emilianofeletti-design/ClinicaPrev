@@ -43,6 +43,8 @@ export interface ClinicalProfileInput {
   familyHistoryCvdEarly: boolean;
   familyHistoryDiabetes: FamilyHistoryLevel;
   familyHistoryCancerFirstDegree: boolean;
+  /** Optional clinical red-flag indicator (NICE NG12 / AIOM): recent persistent bowel habit change (>4-6 wks) or blood in stool */
+  persistentBowelChangeOrBleeding?: boolean;
 }
 
 export interface ClinicalProfileDraft {
@@ -72,6 +74,7 @@ export interface ClinicalProfileDraft {
   familyHistoryCvdEarly: boolean;
   familyHistoryDiabetes: FamilyHistoryLevel | '';
   familyHistoryCancerFirstDegree: boolean;
+  persistentBowelChangeOrBleeding?: boolean;
 }
 
 export type RiskTier = 'low' | 'moderate' | 'elevated' | 'high' | 'very_high';
@@ -143,6 +146,39 @@ export interface GuidanceAction {
   guideline: string;
 }
 
+export type SpecificCancerSiteId =
+  | 'colorectal'
+  | 'lung'
+  | 'skin_melanoma'
+  | 'breast'
+  | 'prostate'
+  | 'liver_upper_gi';
+
+export interface SpecificCancerSiteProfile {
+  id: SpecificCancerSiteId;
+  name: string;
+  anatomicalGroup: string;
+  exposureScore: number;
+  tier: RiskTier;
+  tierLabel: string;
+  activeDrivers: string[];
+  protectiveFactors: string[];
+  modifiableActions: string[];
+  screeningGuideline: string;
+  screeningHighlight: boolean;
+  evidenceCitation: string;
+  primaryFactorKey:
+    | 'smoking'
+    | 'blood_pressure'
+    | 'activity'
+    | 'adiposity'
+    | 'glucose'
+    | 'alcohol'
+    | 'nutrition'
+    | 'lipids'
+    | 'sleep_uv';
+}
+
 export interface ClinicalAssessmentResult {
   computedAt: string;
   parameterVersion: string;
@@ -151,6 +187,7 @@ export interface ClinicalAssessmentResult {
   cardiovascular: DomainRiskResult;
   metabolic: DomainRiskResult;
   oncologic: DomainRiskResult;
+  specificCancers: SpecificCancerSiteProfile[];
   drivers: RiskFactorDriver[];
   radarData: PillarRadarDatum[];
   populationComparison: PathologyPopulationComparison[];

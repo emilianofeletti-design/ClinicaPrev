@@ -783,6 +783,35 @@ export function AssessmentForm({
                   </span>
                 </label>
               </div>
+
+              {/* Optional Clinical Red Flag: Bowel Habit Change vs Habitual Regularity */}
+              <div className="pt-3 border-t border-stone-100 space-y-2">
+                <p className="text-xs font-semibold text-slate-800">
+                  Regolarità intestinale e segnali d’allarme clinici (opzionale · NICE NG12 / AIOM)
+                </p>
+                <label className="flex items-start gap-3 cursor-pointer rounded-lg bg-[#FAF9F5] border border-stone-200/90 p-3">
+                  <input
+                    id="persistentBowelChangeOrBleeding"
+                    data-testid="bowel-red-flag-checkbox"
+                    type="checkbox"
+                    checked={Boolean(draft.persistentBowelChangeOrBleeding)}
+                    onChange={(e) =>
+                      updateField('persistentBowelChangeOrBleeding', e.target.checked)
+                    }
+                    className="mt-0.5 h-4 w-4 rounded border-slate-300 text-rose-600 focus:ring-rose-600 accent-rose-600"
+                  />
+                  <span className="text-xs text-slate-700 leading-relaxed">
+                    <strong className="font-semibold text-slate-900">
+                      Variazione recente e persistente dell’alvo (&gt;4–6 settimane) o sangue nelle
+                      feci:
+                    </strong>{' '}
+                    la stitichezza cronica abituale <em>non</em> è un fattore di rischio statistico
+                    nei protocolli WCRF/AICR, mentre un cambiamento recente e inspiegato della
+                    regolarità intestinale è un segnale clinico che attiva un avviso prioritario di
+                    confronto con il medico senza alterare i punteggi statistici.
+                  </span>
+                </label>
+              </div>
             </fieldset>
           </div>
 

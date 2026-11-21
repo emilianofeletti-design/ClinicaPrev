@@ -10,6 +10,7 @@ import type {
   PillarRadarDatum,
   RiskFactorDriver,
   RiskTier,
+  SpecificCancerSiteProfile,
   ValidationErrors,
 } from '../types/clinical';
 import {
@@ -52,6 +53,7 @@ export const DEFAULT_CLINICAL_PROFILE: ClinicalProfileInput = {
   familyHistoryCvdEarly: false,
   familyHistoryDiabetes: 'second_degree',
   familyHistoryCancerFirstDegree: false,
+  persistentBowelChangeOrBleeding: false,
 };
 
 export const EMPTY_CLINICAL_DRAFT: ClinicalProfileDraft = {
@@ -81,6 +83,7 @@ export const EMPTY_CLINICAL_DRAFT: ClinicalProfileDraft = {
   familyHistoryCvdEarly: false,
   familyHistoryDiabetes: '',
   familyHistoryCancerFirstDegree: false,
+  persistentBowelChangeOrBleeding: false,
 };
 
 export function profileToDraft(profile: ClinicalProfileInput): ClinicalProfileDraft {
@@ -123,6 +126,7 @@ export function profileToDraft(profile: ClinicalProfileInput): ClinicalProfileDr
     familyHistoryCvdEarly: profile.familyHistoryCvdEarly,
     familyHistoryDiabetes: profile.familyHistoryDiabetes,
     familyHistoryCancerFirstDegree: profile.familyHistoryCancerFirstDegree,
+    persistentBowelChangeOrBleeding: Boolean(profile.persistentBowelChangeOrBleeding),
   };
 }
 
@@ -529,6 +533,7 @@ export function draftToClinicalProfile(draft: ClinicalProfileDraft): ClinicalPro
     familyHistoryCvdEarly: draft.familyHistoryCvdEarly,
     familyHistoryDiabetes: draft.familyHistoryDiabetes || 'none',
     familyHistoryCancerFirstDegree: draft.familyHistoryCancerFirstDegree,
+    persistentBowelChangeOrBleeding: Boolean(draft.persistentBowelChangeOrBleeding),
   };
 }
 
@@ -938,6 +943,572 @@ export function calculateOncologicRiskIndex(
     tier,
     tierLabel,
   };
+}
+
+function classifySiteExposureTier(score: number): { tier: RiskTier; tierLabel: string } {
+  if (score < 25) return { tier: 'low', tierLabel: 'Basso' };
+  if (score < 48) return { tier: 'moderate', tierLabel: 'Moderato' };
+  if (score < 68) return { tier: 'elevated', tierLabel: 'Elevato' };
+  return { tier: 'high', tierLabel: 'Alto' };
+}
+
+/**
+ * Organ-Specific Preventive Oncology Exposure Profiles
+ * Grounded in WCRF/AICR Continuous Update Project (CUP 2018) Convincing/Probable matrix,
+ * IARC Monographs (Vol. 100E, 114), European Code Against Cancer (4th Ed.),
+ * and SSN / AIOM / USPSTF screening guidelines.
+ * Note: Habitual chronic constipation is NOT a causal risk factor for colorectal cancer
+ * (WCRF/AICR; Power et al., Am J Gastroenterol 2013), whereas recent persistent change
+ * in bowel habits (>4-6 weeks) or hematochezia is a clinical red flag (NICE NG12 / AIOM).
+ */
+export function calculateSpecificCancerProfiles(
+  input: ClinicalProfileInput,
+  bmi: number,
+  params: ClinicalParameterSet = DEFAULT_CLINICAL_PARAMETERS
+): SpecificCancerSiteProfile[] {
+  const activity = computeEffectiveActivityMetrics(input, params);
+  const safePackYears = Number.isFinite(input.packYears) ? Math.max(0, input.packYears) : 0;
+  const waistThreshold = input.sex === 'male' ? 94 : 80;
+  const waistHigh = input.sex === 'male' ? 102 : 88;
+  const isActiveSmoker =
+    input.smokingStatus === 'current_light' || input.smokingStatus === 'current_heavy';
+
+  const sites: SpecificCancerSiteProfile[] = [];
+
+  // 1. Colon-Retto (WCRF/AICR CUP Colorectal Cancer Report 2018; IARC Vol. 114)
+  {
+    let score = 8;
+    const activeDrivers: string[] = [];
+    const protectiveFactors: string[] = [];
+    const modifiableActions: string[] = [];
+
+    if (input.redProcessedMeatServingsPerWeek > params.redMeatWeeklyLimit) {
+      score += input.redProcessedMeatServingsPerWeek >= 6 ? 20 : 12;
+      activeDrivers.push(
+        `Carni rosse/lavorate elevate (${input.redProcessedMeatServingsPerWeek} porzioni/sett · IARC Gruppo 1/2A)`
+      );
+      modifiableActions.push(
+        `Ridurre carni rosse a ≤${params.redMeatWeeklyLimit} porzioni/sett ed evitare salumi/insaccati`
+      );
+    } else {
+      protectiveFactors.push(
+        `Consumo contenuto di carni rosse/lavorate (${input.redProcessedMeatServingsPerWeek} porz./sett)`
+      );
+    }
+
+    if (input.fruitVegServingsPerDay < params.fruitVegDailyTarget) {
+      score += input.fruitVegServingsPerDay < 3 ? 16 : 8;
+      activeDrivers.push(
+        `Apporto ridotto di fibre e vegetali (${input.fruitVegServingsPerDay} porzioni/giorno)`
+      );
+      modifiableActions.push(
+        `Aumentare verdura, frutta, legumi e cereali integrali a ≥${params.fruitVegDailyTarget} porzioni/giorno (>30 g fibre/die)`
+      );
+    } else {
+      protectiveFactors.push(
+        `Apporto protettivo di fibre e vegetali (${input.fruitVegServingsPerDay} porz./giorno · WCRF Convincing)`
+      );
+    }
+
+    if (input.ultraProcessedIntake !== 'rare') {
+      score += input.ultraProcessedIntake === 'frequent' ? 10 : 5;
+      activeDrivers.push(
+        `Consumo ${input.ultraProcessedIntake === 'frequent' ? 'frequente' : 'moderato'} di alimenti ultra-processati (UPF)`
+      );
+    }
+
+    if (bmi >= 30 || input.waistCm > waistHigh) {
+      score += 14;
+      activeDrivers.push(
+        `Adiposità viscerale/BMI elevato (BMI ${bmi.toFixed(1)} · vita ${input.waistCm} cm)`
+      );
+      modifiableActions.push(
+        `Ridurre gradualmente peso e circonferenza vita verso <${waistThreshold} cm`
+      );
+    } else if (bmi >= 25 || input.waistCm >= waistThreshold) {
+      score += 7;
+      activeDrivers.push(`Sovrappeso o girovita sopra soglia (${input.waistCm} cm)`);
+    } else {
+      protectiveFactors.push('Peso e circonferenza vita nel target normopeso');
+    }
+
+    if (!activity.meetsWhoTarget || input.sedentaryHoursPerDay >= 9) {
+      score += !activity.meetsWhoTarget ? 12 : 6;
+      activeDrivers.push(
+        `Movimento sotto target o sedentarietà (${activity.whoEquivalentMinutes} min eq. OMS/sett · ${input.sedentaryHoursPerDay} h seduto)`
+      );
+      modifiableActions.push(
+        'Incrementare attività fisica aerobica + forza (≥150 min/sett) che accelera il transito e riduce l’infiammazione colica'
+      );
+    } else {
+      protectiveFactors.push(
+        `Attività fisica regolare (${activity.whoEquivalentMinutes} min eq. OMS/sett · WCRF Convincing protective)`
+      );
+    }
+
+    if (input.alcoholUnitsPerWeek > 3) {
+      score += input.alcoholUnitsPerWeek > 14 ? 14 : 7;
+      activeDrivers.push(`Consumo alcolico (${input.alcoholUnitsPerWeek} UA/sett)`);
+      modifiableActions.push('Ridurre le bevande alcoliche (evidenza WCRF convincente sopra 2 UA/die)');
+    }
+
+    if (isActiveSmoker) {
+      score += 8;
+      activeDrivers.push(`Fumo attivo (${safePackYears} pacchetti-anno)`);
+    }
+
+    if (input.familyHistoryCancerFirstDegree) {
+      score += 10;
+      activeDrivers.push('Familiarità oncologica di 1° grado');
+    }
+    if (input.age >= 50) {
+      score += 5;
+    }
+
+    if (modifiableActions.length === 0) {
+      modifiableActions.push(
+        'Mantenere dieta mediterranea ricca di fibre (>30 g/die), idratazione e movimento regolare'
+      );
+    }
+
+    const clamped = Math.min(100, Math.max(6, Math.round(score)));
+    const { tier, tierLabel } = classifySiteExposureTier(clamped);
+
+    const bowelRedFlagNote = input.persistentBowelChangeOrBleeding
+      ? 'ATTENZIONE (Red Flag NICE NG12/AIOM): hai segnalato una variazione recente e persistente dell’alvo o sanguinamento. Pur non essendo un fattore di calcolo statistico, richiede valutazione prioritaria con il MMG (SOF/colonscopia).'
+      : input.age >= 50 && input.age <= 74
+        ? 'Screening SSN attivo per la tua età (50–74 anni): ricerca del sangue occulto fecale (SOF/FIT) ogni 2 anni.'
+        : input.familyHistoryCancerFirstDegree
+          ? 'Con familiarità di 1° grado: valutare con il MMG l’anticipazione dello screening colon-rettale (es. a 40–45 anni).'
+          : 'Programma SSN: test sangue occulto fecale (SOF/FIT) biennale a partire dai 50 anni (nota: la stipsi cronica abituale non aumenta il rischio statistico, ma variazioni recenti >4–6 settimane vanno sempre riferite al medico).';
+
+    sites.push({
+      id: 'colorectal',
+      name: 'Colon-Retto',
+      anatomicalGroup: 'Apparato Gastrointestinale',
+      exposureScore: clamped,
+      tier,
+      tierLabel,
+      activeDrivers,
+      protectiveFactors,
+      modifiableActions,
+      screeningGuideline: bowelRedFlagNote,
+      screeningHighlight:
+        Boolean(input.persistentBowelChangeOrBleeding) ||
+        (input.age >= 50 && input.age <= 74) ||
+        input.familyHistoryCancerFirstDegree,
+      evidenceCitation:
+        'WCRF/AICR Colorectal CUP 2018 · IARC Vol. 114 · Power et al. Am J Gastroenterol 2013 · NICE NG12',
+      primaryFactorKey:
+        input.redProcessedMeatServingsPerWeek > params.redMeatWeeklyLimit ||
+        input.fruitVegServingsPerDay < params.fruitVegDailyTarget
+          ? 'nutrition'
+          : !activity.meetsWhoTarget
+            ? 'activity'
+            : 'adiposity',
+    });
+  }
+
+  // 2. Polmone e Vie Respiratorie (IARC Monograph 100E; USPSTF / Programma RISP Italia)
+  {
+    let score = 6;
+    const activeDrivers: string[] = [];
+    const protectiveFactors: string[] = [];
+    const modifiableActions: string[] = [];
+
+    if (input.smokingStatus === 'never') {
+      protectiveFactors.push('Assenza totale di esposizione attiva al fumo di tabacco');
+    } else if (input.smokingStatus === 'former') {
+      score += Math.min(35, 10 + Math.round(safePackYears * 0.8));
+      activeDrivers.push(`Ex-fumatore (esposizione pregressa: ${safePackYears} pacchetti-anno)`);
+      protectiveFactors.push('Cessazione del fumo già avviata (riduzione progressiva del rischio)');
+      modifiableActions.push(
+        'Mantenere l’astensione completa dal tabacco ed evitare fumo passivo/ambientale'
+      );
+    } else if (input.smokingStatus === 'current_light') {
+      score += Math.min(72, 46 + Math.round(safePackYears * 0.9));
+      activeDrivers.push(`Fumo attivo (<10 sig./die · ${safePackYears} pacchetti-anno)`);
+      modifiableActions.push(
+        'Cessazione completa del fumo (anche poche sigarette al giorno mantengono un rischio polmonare molto elevato)'
+      );
+    } else {
+      score += Math.min(88, 62 + Math.round(safePackYears * 0.9));
+      activeDrivers.push(`Fumo attivo intenso (≥10 sig./die · ${safePackYears} pacchetti-anno)`);
+      modifiableActions.push(
+        'Accesso prioritario a Centro Antifumo SSN / terapia farmacologica di disassuefazione'
+      );
+    }
+
+    if (input.fruitVegServingsPerDay < 3 && input.smokingStatus !== 'never') {
+      score += 5;
+      activeDrivers.push('Basso apporto di carotenoidi/antiossidanti da verdura e frutta fresca');
+      modifiableActions.push('Aumentare frutta e verdura fresca (almeno 5 porzioni/giorno)');
+    } else if (input.fruitVegServingsPerDay >= params.fruitVegDailyTarget) {
+      protectiveFactors.push('Dieta ricca di vegetali e antiossidanti naturali');
+    }
+
+    if (input.familyHistoryCancerFirstDegree) {
+      score += 5;
+      activeDrivers.push('Familiarità oncologica di 1° grado');
+    }
+
+    if (modifiableActions.length === 0) {
+      modifiableActions.push('Mantenere astensione dal tabacco, ambienti liberi da fumo e attività aerobica');
+    }
+
+    const clamped = Math.min(100, Math.max(6, Math.round(score)));
+    const { tier, tierLabel } = classifySiteExposureTier(clamped);
+    const eligibleLdct =
+      input.age >= 50 &&
+      input.age <= 80 &&
+      input.smokingStatus !== 'never' &&
+      (safePackYears >= 20 || input.smokingStatus === 'current_heavy');
+
+    sites.push({
+      id: 'lung',
+      name: 'Polmone e Vie Respiratorie',
+      anatomicalGroup: 'Apparato Respiratorio',
+      exposureScore: clamped,
+      tier,
+      tierLabel,
+      activeDrivers,
+      protectiveFactors,
+      modifiableActions,
+      screeningGuideline: eligibleLdct
+        ? `Criteri RISP Italia / USPSTF soddisfatti (${input.age} anni, ${safePackYears} pacchetti-anno): discutere con il MMG o pneumologo lo screening con TC torace a basso dosaggio (LDCT).`
+        : input.smokingStatus !== 'never'
+          ? 'La prevenzione primaria resta la cessazione completa del fumo; valutare con il MMG il monitoraggio clinico se ≥20 pacchetti-anno tra 50 e 80 anni.'
+          : 'Nessuno screening radiologico indicato nei non fumatori asintomatici.',
+      screeningHighlight: eligibleLdct,
+      evidenceCitation: 'IARC Monograph 100E · NELSON Trial (NEJM 2020) · Rete Italiana Screening Polmonare (RISP)',
+      primaryFactorKey: 'smoking',
+    });
+  }
+
+  // 3. Mammella (femminile) oppure Prostata (maschile)
+  if (input.sex === 'female') {
+    let score = 10;
+    const activeDrivers: string[] = [];
+    const protectiveFactors: string[] = [];
+    const modifiableActions: string[] = [];
+
+    if (input.alcoholUnitsPerWeek > 0) {
+      score += input.alcoholUnitsPerWeek > 7 ? 24 : input.alcoholUnitsPerWeek > 3 ? 14 : 7;
+      activeDrivers.push(
+        `Consumo di alcol (${input.alcoholUnitsPerWeek} UA/sett · WCRF Convincing: rischio dose-dipendente senza soglia sicura)`
+      );
+      modifiableActions.push(
+        'Ridurre o azzerare il consumo alcolico (anche 1 drink/giorno aumenta il rischio mammario del 7–10%)'
+      );
+    } else {
+      protectiveFactors.push('Assenza di consumo alcolico (protezione primaria WCRF/IARC)');
+    }
+
+    if (bmi >= 25 || input.waistCm >= waistThreshold) {
+      const weightImpact = input.age >= 50 ? (bmi >= 30 ? 18 : 11) : bmi >= 30 ? 12 : 6;
+      score += weightImpact;
+      activeDrivers.push(
+        `Adiposità/BMI ${bmi.toFixed(1)} kg/m² (impatto estrogenico e insulinemico, particolarmente rilevante dopo i 50 anni)`
+      );
+      modifiableActions.push('Rientrare o mantenersi nella fascia normopeso (BMI <25 kg/m², vita <80 cm)');
+    } else {
+      protectiveFactors.push('Controllo ottimale del peso corporeo e del tessuto adiposo');
+    }
+
+    if (!activity.meetsWhoTarget) {
+      score += 12;
+      activeDrivers.push(`Attività fisica sotto il target OMS (${activity.whoEquivalentMinutes} min eq./sett)`);
+      modifiableActions.push(
+        'Raggiungere ≥150–300 min/sett di attività fisica combinata (evidenza WCRF probabile/convincente)'
+      );
+    } else {
+      protectiveFactors.push('Attività fisica regolare (effetto protettivo ormonale e metabolico)');
+    }
+
+    if (isActiveSmoker) {
+      score += 7;
+      activeDrivers.push('Fumo di tabacco attivo');
+    }
+
+    if (input.familyHistoryCancerFirstDegree) {
+      score += 16;
+      activeDrivers.push('Familiarità oncologica di 1° grado');
+    }
+    if (input.age >= 50) {
+      score += 6;
+    }
+
+    if (modifiableActions.length === 0) {
+      modifiableActions.push('Mantenere attività fisica regolare, peso stabile e astensione da alcol');
+    }
+
+    const clamped = Math.min(100, Math.max(8, Math.round(score)));
+    const { tier, tierLabel } = classifySiteExposureTier(clamped);
+    const inMammoAge = input.age >= 45 && input.age <= 74;
+
+    sites.push({
+      id: 'breast',
+      name: 'Mammella',
+      anatomicalGroup: 'Prevenzione Oncologica Femminile',
+      exposureScore: clamped,
+      tier,
+      tierLabel,
+      activeDrivers,
+      protectiveFactors,
+      modifiableActions,
+      screeningGuideline: inMammoAge
+        ? 'Screening Mammografico SSN attivo per la tua fascia d’età (45–74 anni, cadenza annuale/biennale secondo protocollo regionale).'
+        : input.familyHistoryCancerFirstDegree
+          ? 'Familiarità di 1° grado presente: discutere con il MMG o senologo un calendario di sorveglianza personalizzato anche prima dei 45 anni.'
+          : 'Adesione allo screening mammografico organizzato SSN a partire dai 45–50 anni (oltre a screening cervicale HPV-DNA/Pap-test 25–64 anni).',
+      screeningHighlight: inMammoAge || input.familyHistoryCancerFirstDegree,
+      evidenceCitation: 'WCRF/AICR Breast Cancer CUP 2018 · Codice Europeo Contro il Cancro · AIOM',
+      primaryFactorKey:
+        input.alcoholUnitsPerWeek > 3
+          ? 'alcohol'
+          : !activity.meetsWhoTarget
+            ? 'activity'
+            : 'adiposity',
+    });
+  } else {
+    // Prostata (Forme Avanzate / Aggressive — WCRF/AICR CUP Prostate Report & AIOM/EAU)
+    let score = 10;
+    const activeDrivers: string[] = [];
+    const protectiveFactors: string[] = [];
+    const modifiableActions: string[] = [];
+
+    if (bmi >= 30 || input.waistCm > waistHigh) {
+      score += 20;
+      activeDrivers.push(
+        `Obesità o adiposità viscerale marcata (BMI ${bmi.toFixed(1)} · vita ${input.waistCm} cm · WCRF Probable per forme prostatiche avanzate)`
+      );
+      modifiableActions.push(
+        'Ridurre la circonferenza vita (<94 cm) e il peso corporeo per abbattere il rischio di forme aggressive'
+      );
+    } else if (bmi >= 25 || input.waistCm >= waistThreshold) {
+      score += 11;
+      activeDrivers.push(`Sovrappeso / circonferenza vita sopra 94 cm (${input.waistCm} cm)`);
+      modifiableActions.push('Ottimizzare composizione corporea e circonferenza addominale');
+    } else {
+      protectiveFactors.push('Normopeso e circonferenza addominale sotto 94 cm');
+    }
+
+    if (!activity.meetsWhoTarget) {
+      score += 10;
+      activeDrivers.push('Attività fisica inferiore alle raccomandazioni OMS');
+      modifiableActions.push('Praticare esercizio combinato aerobico + forza (≥150 min/sett)');
+    } else {
+      protectiveFactors.push('Attività fisica regolare');
+    }
+
+    if (
+      input.redProcessedMeatServingsPerWeek > params.redMeatWeeklyLimit ||
+      input.fruitVegServingsPerDay < 3
+    ) {
+      score += 9;
+      activeDrivers.push('Dieta povera di vegetali/licopene o ricca di grassi animali e carni lavorate');
+      modifiableActions.push(
+        'Privilegiare modello Mediterraneo ricco di ortaggi (pomodori cotti/licopene, crucifere, legumi) e povero di grassi saturi'
+      );
+    } else {
+      protectiveFactors.push('Alimentazione ricca di vegetali e povera di carni lavorate');
+    }
+
+    if (isActiveSmoker) {
+      score += 8;
+      activeDrivers.push('Fumo attivo (associato a peggior prognosi nelle neoplasie urologiche)');
+    }
+
+    if (input.age >= 60) {
+      score += 12;
+      activeDrivers.push(`Fattore anagrafico (${input.age} anni)`);
+    } else if (input.age >= 50) {
+      score += 7;
+      activeDrivers.push(`Età ≥50 anni (${input.age} anni)`);
+    }
+
+    if (input.familyHistoryCancerFirstDegree) {
+      score += 15;
+      activeDrivers.push('Familiarità oncologica di 1° grado');
+    }
+
+    if (modifiableActions.length === 0) {
+      modifiableActions.push('Mantenere normopeso, attività fisica regolare e dieta mediterranea');
+    }
+
+    const clamped = Math.min(100, Math.max(8, Math.round(score)));
+    const { tier, tierLabel } = classifySiteExposureTier(clamped);
+    const shouldDiscussPsa =
+      input.age >= 50 || (input.age >= 45 && input.familyHistoryCancerFirstDegree);
+
+    sites.push({
+      id: 'prostate',
+      name: 'Prostata (Forme Avanzate)',
+      anatomicalGroup: 'Prevenzione Oncologica Maschile',
+      exposureScore: clamped,
+      tier,
+      tierLabel,
+      activeDrivers,
+      protectiveFactors,
+      modifiableActions,
+      screeningGuideline: shouldDiscussPsa
+        ? 'Linee guida AIOM / EAU (≥50 anni, o ≥45 con familiarità): valutare con il MMG o l’urologo l’opportunità del dosaggio PSA informato e visita urologica.'
+        : 'Prima dei 45–50 anni senza familiarità non è indicato il PSA di routine; priorità al controllo del peso e dello stile di vita.',
+      screeningHighlight: shouldDiscussPsa,
+      evidenceCitation: 'WCRF/AICR Prostate CUP 2018 · Linee Guida EAU / AIOM',
+      primaryFactorKey: bmi >= 25 || input.waistCm >= waistThreshold ? 'adiposity' : 'activity',
+    });
+  }
+
+  // 4. Cute e Melanoma (IARC Group 1 Solar UV Radiation; European Code Against Cancer)
+  {
+    let score = 8;
+    const activeDrivers: string[] = [];
+    const protectiveFactors: string[] = [];
+    const modifiableActions: string[] = [];
+
+    if (input.uvProtection === 'rare') {
+      score += 54;
+      activeDrivers.push(
+        'Protezione solare rara o esposizioni intense senza schermo (Radiazione UV: cancerogeno IARC Gruppo 1)'
+      );
+      modifiableActions.push(
+        'Applicare regolarmente filtro solare SPF 30–50+ ad ampio spettro, evitare le ore 11–16 estive e non usare lampade UV'
+      );
+    } else if (input.uvProtection === 'occasional') {
+      score += 26;
+      activeDrivers.push('Fotoprotezione UV solo occasionale');
+      modifiableActions.push(
+        'Rendere sistematico l’uso di SPF 30–50+, occhiali certificati UV e cappello durante attività all’aperto'
+      );
+    } else {
+      protectiveFactors.push('Fotoprotezione solare costante (SPF 30–50+ e gestione ombra)');
+    }
+
+    if (input.age >= 55) {
+      score += 7;
+      activeDrivers.push(`Foto-esposizione cumulativa nel corso della vita (${input.age} anni)`);
+    }
+
+    if (input.familyHistoryCancerFirstDegree) {
+      score += 8;
+      activeDrivers.push('Familiarità oncologica di 1° grado');
+    }
+
+    if (modifiableActions.length === 0) {
+      modifiableActions.push(
+        'Proseguire con fotoprotezione costante e auto-ispezione periodica dei nei (regola ABCDE)'
+      );
+    }
+
+    const clamped = Math.min(100, Math.max(8, Math.round(score)));
+    const { tier, tierLabel } = classifySiteExposureTier(clamped);
+
+    sites.push({
+      id: 'skin_melanoma',
+      name: 'Cute e Melanoma',
+      anatomicalGroup: 'Dermatologia Preventiva',
+      exposureScore: clamped,
+      tier,
+      tierLabel,
+      activeDrivers,
+      protectiveFactors,
+      modifiableActions,
+      screeningGuideline:
+        input.uvProtection === 'rare' || input.familyHistoryCancerFirstDegree
+          ? 'Consigliata visita dermatologica con epiluminescenza (mappatura dei nei) e auto-controllo periodico secondo regola ABCDE.'
+          : 'Auto-ispezione periodica della cute (regola ABCDE) e controllo dermatologico in caso di nevi nuovi o in evoluzione.',
+      screeningHighlight: input.uvProtection === 'rare',
+      evidenceCitation: 'IARC Monograph 100D (Solar & UV Radiation) · Codice Europeo Contro il Cancro',
+      primaryFactorKey: 'sleep_uv',
+    });
+  }
+
+  // 5. Fegato e Vie Aero-Digestive Superiori (Esofago, Cavo Orale, Faringe — WCRF/AICR & IARC)
+  {
+    let score = 6;
+    const activeDrivers: string[] = [];
+    const protectiveFactors: string[] = [];
+    const modifiableActions: string[] = [];
+
+    if (input.alcoholUnitsPerWeek > 14) {
+      score += 36;
+      activeDrivers.push(
+        `Consumo alcolico elevato (${input.alcoholUnitsPerWeek} UA/sett · IARC Gruppo 1 per fegato, esofago, cavo orale e faringe)`
+      );
+      modifiableActions.push(
+        'Ridurre drasticamente l’alcol inserendo almeno 4–5 giorni alcohol-free a settimana'
+      );
+    } else if (input.alcoholUnitsPerWeek > 3) {
+      score += input.alcoholUnitsPerWeek > 7 ? 20 : 10;
+      activeDrivers.push(`Consumo alcolico (${input.alcoholUnitsPerWeek} UA/sett)`);
+      modifiableActions.push('Limitare gli alcolici verso ≤3 UA/sett (target ottimale: 0 UA)');
+    } else {
+      protectiveFactors.push('Consumo alcolico assente o minimo (≤3 UA/sett)');
+    }
+
+    if (isActiveSmoker) {
+      score += input.smokingStatus === 'current_heavy' ? 24 : 16;
+      activeDrivers.push('Fumo di tabacco attivo');
+      modifiableActions.push('Smettere di fumare per eliminare l’esposizione diretta delle mucose');
+    } else if (input.smokingStatus === 'never') {
+      protectiveFactors.push('Mucose aero-digestive non esposte al fumo di tabacco');
+    }
+
+    // Multiplicative synergy between alcohol and active tobacco (IARC / WCRF)
+    if (isActiveSmoker && input.alcoholUnitsPerWeek > 7) {
+      score += 14;
+      activeDrivers.push(
+        'Effetto sinergico moltiplicativo Alcol + Fumo sulle mucose di cavo orale, faringe ed esofago'
+      );
+    }
+
+    // Metabolic liver burden (MASLD/NAFLD pathway -> HCC risk per WCRF/EASL)
+    if (bmi >= 30 || input.waistCm > waistHigh || input.priorHighBloodGlucose) {
+      score += bmi >= 30 && input.priorHighBloodGlucose ? 18 : 11;
+      activeDrivers.push(
+        'Carico metabolico epatico (adiposità viscerale e/o pregressa iperglicemia · fattore WCRF per epatocarcinoma)'
+      );
+      modifiableActions.push(
+        'Controllo di peso, girovita e glicemia per prevenire la steatosi epatica metabolica (MASLD)'
+      );
+    } else {
+      protectiveFactors.push('Assenza di sovraccarico metabolico epatico (BMI e glicemia controllati)');
+    }
+
+    if (modifiableActions.length === 0) {
+      modifiableActions.push('Mantenere astensione da fumo, consumo alcolico nullo/minimo e peso sano');
+    }
+
+    const clamped = Math.min(100, Math.max(6, Math.round(score)));
+    const { tier, tierLabel } = classifySiteExposureTier(clamped);
+
+    sites.push({
+      id: 'liver_upper_gi',
+      name: 'Fegato e Vie Aero-Digestive Superiori',
+      anatomicalGroup: 'Fegato, Esofago e Cavo Orale',
+      exposureScore: clamped,
+      tier,
+      tierLabel,
+      activeDrivers,
+      protectiveFactors,
+      modifiableActions,
+      screeningGuideline:
+        input.age >= 35 && input.age <= 57
+          ? 'Screening gratuito SSN Epatite C (HCV, nati 1969–1989) + ispezione odontoiatrica annuale delle mucose orali se fumatore/consumatore di alcol.'
+          : 'Prevenzione epatiti virali (HBV/HCV), controllo ecografico/transaminasi con il MMG in caso di steatosi metabolica e controllo odontoiatrico periodico.',
+      screeningHighlight: isActiveSmoker && input.alcoholUnitsPerWeek > 7,
+      evidenceCitation: 'WCRF/AICR Liver & Mouth/Pharynx/Esophagus CUP 2018 · IARC Vol. 100E · EASL',
+      primaryFactorKey:
+        input.alcoholUnitsPerWeek > 3
+          ? 'alcohol'
+          : isActiveSmoker
+            ? 'smoking'
+            : 'adiposity',
+    });
+  }
+
+  return sites.sort((a, b) => b.exposureScore - a.exposureScore);
 }
 
 function buildRadarData(input: ClinicalProfileInput, bmi: number): PillarRadarDatum[] {
@@ -1382,6 +1953,11 @@ function buildGuidanceActions(
       'Familiarità oncologica di 1° grado dichiarata: discutere con il MMG o un centro di oncogenetica l’eventuale anticipazione dell’età di inizio degli screening organo-specifici.'
     );
   }
+  if (input.persistentBowelChangeOrBleeding) {
+    screeningNotes.unshift(
+      'Segnale d’allarme gastrointestinale riferito (variazione persistente dell’alvo o sanguinamento): contattare il Medico di Medicina Generale per valutazione clinica diretta (criteri NICE NG12 / AIOM).'
+    );
+  }
   if (screeningNotes.length === 0) {
     screeningNotes.push(
       'Mantenere l’adesione ai programmi di screening organizzati del Servizio Sanitario Nazionale in base alla propria fascia d’età e anamnesi familiare.'
@@ -1475,6 +2051,7 @@ export function evaluateClinicalRisk(
     ],
   };
 
+  const specificCancers = calculateSpecificCancerProfiles(input, bmi, params);
   const drivers = buildDrivers(input, bmi);
   const radarData = buildRadarData(input, bmi);
   const populationComparison = buildPopulationComparison(
@@ -1507,6 +2084,7 @@ export function evaluateClinicalRisk(
     cardiovascular,
     metabolic,
     oncologic,
+    specificCancers,
     drivers,
     radarData,
     populationComparison,
